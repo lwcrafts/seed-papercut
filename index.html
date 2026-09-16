@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>纸雕光影灯分层图纸提取器 · 3D 预览</title>
+    <link rel="stylesheet" href="./src/app/style.css" />
+  </head>
+  <body>
+    <div id="webgl-container"></div>
+
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">▤</div>
+        <div>
+          <div class="brand-title">SHADOW BOX 3D <span class="brand-tag">预览</span></div>
+          <div class="brand-sub">纸雕光影灯 · 分层装配与爆炸分解预览</div>
+        </div>
+      </div>
+
+      <div id="data-status-badge" class="status-pill">
+        <span class="status-dot"></span>
+        <span id="data-status-text">图层装配中…</span>
+      </div>
+
+      <div class="top-actions">
+        <label class="btn">
+          载入 JSON
+          <input id="file-input" type="file" accept=".json" hidden />
+        </label>
+        <button id="btn-toggle-2d" class="btn">2D 切片查看</button>
+        <button id="btn-screenshot" class="btn">导出渲染图</button>
+        <button id="btn-reset-view" class="btn" title="重置相机视角">重置视角</button>
+      </div>
+    </header>
+
+    <div class="cam-toolbar glass">
+      <div class="cam-toolbar-label">VIEW</div>
+      <button id="cam-front" class="btn btn-block">正视</button>
+      <button id="cam-persp" class="btn btn-block active">45° 透视</button>
+      <button id="cam-side" class="btn btn-block">侧视层间</button>
+      <button id="cam-top" class="btn btn-block">俯视</button>
+    </div>
+
+    <aside id="sidebar" class="sidebar glass">
+      <div class="tabs">
+        <button class="tab active" data-tab="light">灯光系统</button>
+        <button class="tab" data-tab="struct">结构显隐</button>
+        <button class="tab" data-tab="layers">单层穿透</button>
+      </div>
+
+      <div class="tab-body">
+        <section id="tab-light" class="tab-panel">
+          <div class="control">
+            <div class="control-head">
+              <label>LED 背光亮度</label>
+              <span id="light-intensity-val" class="mono value">2.2x</span>
+            </div>
+            <input id="slider-intensity" type="range" min="0" max="5" step="0.1" value="2.2" />
+            <div class="scale-labels"><span>0 熄灯</span><span>2.5 标准</span><span>5.0 高亮</span></div>
+          </div>
+
+          <div class="control">
+            <label class="control-label">光源色温预设</label>
+            <div class="preset-grid">
+              <button class="preset active" data-color="#FFE0B2"><span class="swatch" style="background:#FFE0B2"></span>3000K 暖黄</button>
+              <button class="preset" data-color="#FFF4E8"><span class="swatch" style="background:#FFF4E8"></span>4500K 自然白</button>
+              <button class="preset" data-color="#E8F1FF"><span class="swatch" style="background:#E8F1FF"></span>6000K 冷月白</button>
+              <button class="preset" data-color="#FFA450"><span class="swatch" style="background:#FFA450"></span>晚霞橙</button>
+            </div>
+            <div class="color-row">
+              <span>自定义颜色</span>
+              <span class="color-input-wrap">
+                <input id="picker-light-color" type="color" value="#FFE0B2" />
+                <span id="hex-color-val" class="mono value">#FFE0B2</span>
+              </span>
+            </div>
+          </div>
+
+          <label class="switch-row">
+            <span>
+              <span class="switch-title">环境光暗室模式</span>
+              <span class="switch-desc">调暗环境光，观察夜灯发光漫射</span>
+            </span>
+            <input id="toggle-darkroom" type="checkbox" checked />
+          </label>
+
+          <label class="switch-row">
+            <span>
+              <span class="switch-title">纸张微透光漫射</span>
+              <span class="switch-desc">模拟厚质卡纸的透光渐变效果</span>
+            </span>
+            <input id="toggle-translucency" type="checkbox" checked />
+          </label>
+        </section>
+
+        <section id="tab-struct" class="tab-panel hidden">
+          <label class="check-row"><span>实木外框与亚克力面板</span><input id="check-vis-frame" type="checkbox" checked /></label>
+          <label class="check-row"><span id="struct-paper-label">纸雕卡层</span><input id="check-vis-paper" type="checkbox" checked /></label>
+          <label class="check-row"><span>EVA 遮光隔离垫条</span><input id="check-vis-spacers" type="checkbox" checked /></label>
+          <label class="check-row"><span>LED 发光模组与后盖板</span><input id="check-vis-backplate" type="checkbox" checked /></label>
+
+          <div class="fab-placeholder" aria-disabled="true">
+            <div class="fab-title">制造检查（算法接入中）</div>
+            <div class="fab-desc">孤岛检测、连接桥、切割长度、闭合与自相交检查将由本地几何算法输出，当前版本不提供核验结论。</div>
+            <div class="fab-fields">
+              <span>孤岛</span><span>连接桥</span><span>切割长度</span><span>闭合</span><span>自相交</span>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-layers" class="tab-panel hidden">
+          <p class="hint">选择单独查看某一层，其余层会以半透明显示。</p>
+          <button id="btn-solo-all" class="btn btn-block active">全部图层装配展示</button>
+          <div id="solo-layer-list" class="solo-list"></div>
+        </section>
+      </div>
+
+      <div class="sidebar-footer">
+        <span id="footer-assembly">装配厚度: -- mm</span>
+        <span id="footer-layers" class="mono">--</span>
+      </div>
+    </aside>
+
+    <div class="explode-bar glass">
+      <div class="explode-head">
+        <label for="slider-explode">3D 爆炸分解 (ASSEMBLY / EXPLODE)</label>
+        <span id="explode-percent-pill" class="pill">0% 完全组装</span>
+      </div>
+      <input id="slider-explode" type="range" min="0" max="100" value="0" />
+      <div class="explode-actions">
+        <span class="jump-group">
+          <button class="btn btn-jump active" data-explode="0">0% 组装</button>
+          <button class="btn btn-jump" data-explode="35">35% 层析</button>
+          <button class="btn btn-jump" data-explode="70">70% 剖析</button>
+          <button class="btn btn-jump" data-explode="100">100% 爆炸</button>
+        </span>
+        <button id="btn-auto-demo" class="btn">自动演示</button>
+      </div>
+    </div>
+
+    <div id="drawer-2d" class="drawer">
+      <div class="drawer-head">
+        <div>
+          <h2>2D 矢量切片查看</h2>
+          <p class="mono drawer-sub">Layer path inspector</p>
+        </div>
+        <button id="btn-close-2d" class="btn">关闭</button>
+      </div>
+      <div id="drawer-layer-tabs" class="drawer-tabs"></div>
+      <div class="drawer-body">
+        <div class="mode-row">
+          <span>显示模式</span>
+          <span>
+            <button id="btn-mode-solid" class="btn active">工艺白</button>
+            <button id="btn-mode-laser" class="btn btn-laser">激光切线</button>
+          </span>
+        </div>
+        <div class="svg-viewport">
+          <div id="svg-preview-container"></div>
+          <span id="svg-canvas-badge" class="mono canvas-badge">viewBox --</span>
+        </div>
+        <div class="layer-tech-card">
+          <div class="control-head">
+            <h3 id="card-layer-name" class="value">图层名称</h3>
+            <span id="card-layer-depth" class="mono">景深 --</span>
+          </div>
+          <p id="card-layer-desc" class="hint"></p>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"><span id="toast-msg"></span></div>
+
+    <script type="module" src="./src/app/main.ts"></script>
+  </body>
+</html>

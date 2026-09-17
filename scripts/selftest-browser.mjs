@@ -9,11 +9,15 @@
 //   7) 现场重跑（票 16）：mock fetch（拆层 b64_json + evolving SSE 流）跑通五段
 //      状态机与结果切换；401 失败分支降级回烘焙数据并显示「演示数据」徽标；
 //      Key 不落盘（localStorage/sessionStorage/cookie 无 Key 字样）
+//   8) 场景切换骨架（票 17）：单场景时切换器隐藏、无场景按钮
+//   9) 文案红线（票 17）：check-copy.mjs 词表检查通过
+//  10) README（票 17）：存在且含关键小节
 // 用法：npm run build 后 node scripts/selftest-browser.mjs
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync } from 'node:fs';
 import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
 
@@ -52,6 +56,22 @@ const server = createServer((req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}/`;
 
+/* ---- 票 17：文案红线词表检查（独立脚本，不必开浏览器） ---- */
+let copyCheckOut = '';
+let copyCheckOk = true;
+try {
+  copyCheckOut = execFileSync('node', [join(REPO, 'scripts', 'check-copy.mjs')], { encoding: 'utf8' });
+} catch (err) {
+  copyCheckOk = false;
+  copyCheckOut = String(err.stdout ?? err);
+}
+
+/* ---- 票 17：README 存在且含关键小节 ---- */
+const repoReadme = readFileSync(join(REPO, 'README.md'), 'utf8');
+const readmeMissingSections = ['作品', '管线', '本地开发', '烘焙新场景', '现场重跑', 'GitHub Pages 部署', '数据契约', 'LayerSet', 'bake', 'rerun:live', '致谢'].filter(
+  (k) => !repoReadme.includes(k),
+);
+
 const consoleErrors = [];
 const pageErrors = [];
 const browser = await chromium.launch({
@@ -85,6 +105,9 @@ const info = await page.evaluate(() => {
     statusText: document.getElementById('data-status-text')?.textContent ?? '',
     fabPlaceholder: !!document.querySelector('.fab-placeholder'),
     soloItems: document.querySelectorAll('#solo-layer-list button').length,
+    // 票 17：单场景时切换器应隐藏（spec §4.5）
+    sceneSwitcherHidden: document.getElementById('scene-switcher')?.classList.contains('hidden') ?? null,
+    sceneBtnCount: document.querySelectorAll('#scene-switcher button').length,
   };
 });
 
@@ -513,6 +536,10 @@ const checks = [
   { name: 'rerun: API key not in console/page error logs', pass: !consoleErrors.join('|').includes(MOCK_KEY) && !pageErrors.join('|').includes(MOCK_KEY), detail: 'key absent from captured logs' },
   { name: 'rerun 401: error step shows category + fallback button', pass: rerunFail.cat.includes('Key') && rerunFail.msg.length > 0 && rerunFail.fallbackVisible, detail: JSON.stringify(rerunFail) },
   { name: 'rerun fallback: demo badge shown, baked data restored, key cleared', pass: rerunFallback.badge && rerunFallback.mapSource === 'evolving' && Math.abs(rerunFallback.pxPerMm - baked.pipeline.pxPerMm) < 1e-9 && rerunFallback.layerCount === 6 && rerunFallback.modalClosed && rerunFallback.keyInputEmpty, detail: JSON.stringify(rerunFallback) },
+  // ---- 票 17：场景切换骨架 + 文案红线 + README ----
+  { name: 'scene switcher hidden for single scene (spec 4.5)', pass: info.sceneSwitcherHidden === true && info.sceneBtnCount === 0, detail: JSON.stringify({ hidden: info.sceneSwitcherHidden, buttons: info.sceneBtnCount }) },
+  { name: 'copy redline wordlist clean (check-copy.mjs)', pass: copyCheckOk, detail: copyCheckOut.slice(0, 300) },
+  { name: 'README exists with key sections', pass: readmeMissingSections.length === 0, detail: readmeMissingSections.length > 0 ? `missing: ${readmeMissingSections.join(', ')}` : 'ok' },
 ];
 for (const c of checks) console.log(`${c.pass ? 'PASS' : 'FAIL'} ${c.name}${c.pass ? '' : ' :: ' + JSON.stringify(c.detail)}`);
 writeFileSync(

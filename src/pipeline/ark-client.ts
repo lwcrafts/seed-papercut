@@ -79,7 +79,7 @@ async function readErrorBody(res: Response): Promise<string> {
 }
 
 /**
- * 拆层：Seedream 5.0-pro layer_decomposition。
+ * 拆层：Seed-2.1-pro（doubao-seedream-5-0-pro-260628）layer_decomposition。
  * 优先请求 b64_json（浏览器内直接解码，绕开 TOS 图片下载的 CORS 不确定性）；
  * 若服务端不认该参数（400）则不带参数重试一次，改走 url 下载。
  */

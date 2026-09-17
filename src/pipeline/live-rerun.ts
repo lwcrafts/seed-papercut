@@ -1,7 +1,7 @@
 // 现场重跑全链路编排（票 16）：浏览器内的异步任务状态机。
 //
 // 流水线（与 scripts/bake.mjs 同源，Node 逻辑浏览器化）：
-//   拆层（Seedream 5.0-pro layer_decomposition）
+//   拆层（Seed-2.1-pro，模型 ID doubao-seedream-5-0-pro-260628，layer_decomposition）
 //   → evolving 语义映射（SSE 流式，strict json_schema，模板 v2）
 //   → 合成 + 二值化（bbox 回位 + alpha 阈值 + 闭运算 + 去噪点）
 //   → 拓扑修复（中值滤波/开运算/缝隙闭合/窄缝修复 + 外框纸环 + 孤岛加桥）
@@ -121,7 +121,7 @@ export async function runLiveRerun(opts: RerunOptions): Promise<void> {
       reader.onerror = () => reject(new ArkError('network', '场景图读取失败'));
       reader.readAsDataURL(imgBlob);
     });
-    callbacks.onDetail('decompose', '拆层请求已提交（Seedream 分层引擎，通常约 2 分钟）…');
+    callbacks.onDetail('decompose', '拆层请求已提交（Seed-2.1-pro 分层引擎，通常约 2 分钟）…');
     const dec = await decompose({ apiKey, imageDataUrl, signal });
     timings.decompose = dec.ms;
     const items = dec.items;

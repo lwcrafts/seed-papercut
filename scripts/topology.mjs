@@ -203,7 +203,7 @@ class Heap {
 }
 
 // 从「分量组」（ownIds，含已被桥并进来的分量）出发在镂空黑像素上做 Dijkstra；
-// 第一次碰到组外白纸即最短逃生路径。只走黑像素 → 路径不会穿过别的孤岛；
+// 首次碰到组外白纸即最短逃生路径。只走黑像素 → 路径不会穿过别的孤岛；
 // 嵌套（环中核）：核先与环并组，下一轮整组向外逃生，天然支持链式。
 export function shortestEscape(m, label, ownIds) {
   const { w, h, px } = m;

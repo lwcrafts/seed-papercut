@@ -12,12 +12,34 @@ import { runLiveRerun, type RerunStage } from '../pipeline/live-rerun';
 import evolvingPrompt from '../../scripts/evolving-prompt-v2.md?raw';
 import evolvingSchema from '../../scripts/evolving-schema-v2.json';
 
-/** 预置场景登记（与 scripts/bake.mjs 的 SCENES 保持一致；先只烘焙/重跑 1 张） */
-const SCENE = {
-  id: 'xiake',
-  image: 'scenes/xiake.jpg',
-  hint: '暖金色纸雕风古风山水插画：侠客策马、古亭、层叠山峦、松树、祥云、水岸草丛。',
-};
+/**
+ * 预置场景清单（与 scripts/bake.mjs 的 SCENES 保持一致；spec §4.5）。
+ * 未来加场景 = 烘焙出 data/baked/<id>.json + scenes/<id>.jpg 后，在这里加一条，
+ * 切换器 / 数据载入 / 现场重跑全部吃这份清单，不需要改其他代码。
+ * 只有 1 个场景时切换器自动隐藏。
+ */
+interface SceneEntry {
+  id: string;
+  name: string;
+  hint: string;
+}
+const SCENES: SceneEntry[] = [
+  {
+    id: 'xiake',
+    name: '侠客策马',
+    hint: '暖金色纸雕风古风山水插画：侠客策马、古亭、层叠山峦、松树、祥云、水岸草丛。',
+  },
+];
+let currentScene: SceneEntry = SCENES[0];
+
+/** 烘焙 LayerSet JSON 地址（与 scripts/bake.mjs 的产出路径对应） */
+function bakedJsonUrl(sceneId: string): string {
+  return `${import.meta.env.BASE_URL}data/baked/${sceneId}.json`;
+}
+/** 预置场景原图地址（现场重跑用） */
+function sceneImageUrl(sceneId: string): string {
+  return `${import.meta.env.BASE_URL}scenes/${sceneId}.jpg`;
+}
 
 const EMPTY_FAB: FabCheck = {
   islands: [],
@@ -607,18 +629,59 @@ function loadSet(set: LayerSet): void {
 
 async function bootstrap(): Promise<void> {
   setExplode(0);
+  renderSceneSwitcher();
   try {
-    const res = await fetch(`${import.meta.env.BASE_URL}data/baked/xiake.json`);
+    const res = await fetch(bakedJsonUrl(currentScene.id));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const set = normalizeLayerSet(await res.json(), 'xiake');
+    const set = normalizeLayerSet(await res.json(), currentScene.id);
     state.bakedLayerSet = set;
     loadSet(set);
     // 自测/调试句柄（不影响 UI）
-    (window as unknown as Record<string, unknown>).__seedPapercut = { scene, layerSet: set, rerun: rerunDebug };
+    (window as unknown as Record<string, unknown>).__seedPapercut = { scene, layerSet: set, rerun: rerunDebug, scenes: SCENES };
   } catch (err) {
     console.error('failed to load baked layer set', err);
     $('data-status-text').textContent = '烘焙图层载入失败';
     showToast('烘焙图层数据载入失败，请用“载入 JSON”选择本地文件');
+  }
+}
+
+/* ---------------- 场景切换（票 17）：由 SCENES 清单驱动，单场景隐藏 ---------------- */
+
+/** 渲染场景切换器；只有 1 个场景时保持隐藏（spec §4.5，selftest 有断言） */
+function renderSceneSwitcher(): void {
+  const nav = $<HTMLElement>('scene-switcher');
+  nav.innerHTML = '';
+  if (SCENES.length <= 1) {
+    nav.classList.add('hidden');
+    return;
+  }
+  nav.classList.remove('hidden');
+  for (const s of SCENES) {
+    const btn = document.createElement('button');
+    btn.className = `btn scene-btn${s.id === currentScene.id ? ' active' : ''}`;
+    btn.textContent = s.name;
+    btn.addEventListener('click', () => void switchScene(s.id));
+    nav.appendChild(btn);
+  }
+}
+
+/** 切换预置场景：换烘焙数据 + 换现场重跑的对象；失败不动当前场景 */
+async function switchScene(sceneId: string): Promise<void> {
+  const target = SCENES.find((s) => s.id === sceneId);
+  if (!target || sceneId === currentScene.id) return;
+  try {
+    const res = await fetch(bakedJsonUrl(sceneId));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const set = normalizeLayerSet(await res.json(), sceneId);
+    currentScene = target;
+    state.bakedLayerSet = set;
+    setDemoBadge(false);
+    loadSet(set);
+    renderSceneSwitcher();
+    showToast(`已切换到场景：${target.name}`);
+  } catch (err) {
+    console.error('failed to switch scene', err);
+    showToast(`场景 ${sceneId} 数据载入失败，保留当前场景`);
   }
 }
 
@@ -835,9 +898,9 @@ $('btn-rerun-start').addEventListener('click', () => {
 
   void runLiveRerun({
     apiKey: key,
-    sceneImageUrl: `${import.meta.env.BASE_URL}${SCENE.image}`,
-    sceneId: SCENE.id,
-    sceneHint: SCENE.hint,
+    sceneImageUrl: sceneImageUrl(currentScene.id),
+    sceneId: currentScene.id,
+    sceneHint: currentScene.hint,
     promptTemplate: evolvingPrompt,
     schema: evolvingSchema,
     signal: controller.signal,

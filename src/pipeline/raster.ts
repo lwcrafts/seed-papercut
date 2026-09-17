@@ -9,7 +9,7 @@ export const CLOSE_R = 1; // 闭运算半径（工作分辨率，重连细链断
 export const DESPECKLE_AREA = 64; // 小于该面积的独立白区视为噪点（工作分辨率）
 export const SCALE = 0.5; // 形态学/拓扑/矢量化在半分辨率上跑（spike 验证参数）
 
-/** 从解码后的图层 ImageData 取 alpha，按 bbox 绝对坐标最近邻缩放回 CW×CH 画布。 */
+/** 从解码后的图层 ImageData 取 alpha，按 bbox 的 absolute 数值最近邻缩放回 CW×CH 画布。 */
 export function extractAlpha(
   img: { width: number; height: number; data: Uint8ClampedArray },
   bbox: [number, number, number, number],

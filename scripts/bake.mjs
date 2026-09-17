@@ -1,5 +1,5 @@
 // 烘焙管线（issue 12 前半 + issue 13 后半）：
-//   场景图 → Seedream 5.0-pro 拆层 → Seed-Evolving 语义映射
+//   场景图 → Seed-2.1-pro（doubao-seedream-5-0-pro-260628）拆层 → Seed-Evolving 语义映射
 //   → 按映射把各 z 层缩放回原画布合成 → alpha 二值化（闭运算 r=1 + 去 <64px 噪点）
 //   → 6 层二值蒙版 PNG（白=纸）
 //   → 拓扑修复（4 邻接孤岛检测 + Dijkstra 最短桥 + DSU 链式，桥宽 3mm 圆头胶囊，

@@ -116,6 +116,15 @@ html, body {
 
 .top-actions { display: flex; gap: 8px; }
 
+/* ---------- scene switcher (issue 17) ---------- */
+.scene-switcher { display: flex; gap: 6px; align-items: center; }
+.scene-btn { padding: 5px 12px; font-size: 12px; }
+.scene-btn.active {
+  border-color: var(--accent, #e8b04b);
+  color: #ffd98a;
+  background: rgba(232, 176, 75, 0.12);
+}
+
 /* ---------- camera toolbar ---------- */
 .cam-toolbar {
   position: fixed;

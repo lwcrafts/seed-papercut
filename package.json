@@ -11,6 +11,7 @@
     "bake": "node scripts/bake.mjs",
     "bake:check": "node scripts/check-masks.mjs",
     "selftest:browser": "node scripts/selftest-browser.mjs",
+    "check:copy": "node scripts/check-copy.mjs",
     "rerun:live": "node scripts/rerun-live-manual.mjs"
   },
   "dependencies": {

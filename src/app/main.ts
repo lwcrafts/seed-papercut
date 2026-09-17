@@ -1,6 +1,12 @@
 import './style.css';
 import { LightboxScene, type CameraViewName, type StructurePart } from '../preview/LightboxScene';
 import { parseViewBox, type FabCheck, type Layer, type LayerSet } from '../types';
+import {
+  buildStoreZip,
+  buildZipEntries,
+  downloadBytes,
+  validateLayerSetExport,
+} from '../pipeline/svg-export';
 
 const EMPTY_FAB: FabCheck = {
   islands: [],
@@ -530,6 +536,39 @@ $<HTMLInputElement>('file-input').addEventListener('change', (e) => {
   (e.target as HTMLInputElement).value = '';
 });
 
+/* ---------------- SVG/ZIP export (issue 15) ---------------- */
+
+const exportZipBtn = $<HTMLButtonElement>('btn-export-zip');
+
+function refreshExportReadiness(): void {
+  const set = state.layerSet;
+  if (!set) {
+    exportZipBtn.disabled = true;
+    exportZipBtn.title = '等待图层数据载入…';
+    return;
+  }
+  const issues = validateLayerSetExport(set);
+  exportZipBtn.disabled = issues.length > 0;
+  exportZipBtn.title =
+    issues.length > 0
+      ? `导出自检未通过：${issues[0].message}${issues.length > 1 ? `（共 ${issues.length} 项）` : ''}`
+      : '打包下载全部切割 SVG + README.txt';
+}
+
+exportZipBtn.addEventListener('click', () => {
+  const set = state.layerSet;
+  if (!set || exportZipBtn.disabled) return;
+  const issues = validateLayerSetExport(set);
+  if (issues.length > 0) {
+    showToast(`导出自检未通过：${issues[0].message}`);
+    return;
+  }
+  const zip = buildStoreZip(buildZipEntries(set));
+  const filename = `${set.sceneId}-layers.zip`;
+  downloadBytes(filename, zip);
+  showToast(`切割图纸已导出：${filename}（${set.layers.length} 层 SVG + README）`);
+});
+
 /* ---------------- data loading ---------------- */
 
 function loadSet(set: LayerSet): void {
@@ -546,6 +585,7 @@ function loadSet(set: LayerSet): void {
   $('struct-paper-label').textContent = `${set.layers.length} 层激光纸雕卡纸`;
   $('footer-layers').textContent = `L1 ~ L${set.layers.length}`;
   $('footer-assembly').textContent = `图层数: ${set.layers.length} · 层距 10mm`;
+  refreshExportReadiness();
 }
 
 async function bootstrap(): Promise<void> {

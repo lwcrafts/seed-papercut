@@ -1,12 +1,14 @@
-// headless 浏览器自测（issue 13 + 14）：加载 dist/ 构建产物，验证
+// headless 浏览器自测（issue 13 + 14 + 15）：加载 dist/ 构建产物，验证
 //   1) xiake.json 加载成功、无 console error / pageerror
 //   2) 6 层挤出网格就位、z 序 L1 靠 LED（paperZ 最小）
 //   3) WebGL（SwiftShader 软渲染）可用且画面非空白
 //   4) 制造检查面板（票 14）：占位块已替换，面板字段与 xiake.json fabCheck 逐字段一致
 //   5) 2D 切片视图：桥位黄色标记数量 == JSON bridgesAdded、缝隙 <2mm 层有 caution
+//   6) SVG/ZIP 导出（票 15）：点击导出 → 拦截下载 → 解析 ZIP（STORE+CRC32 校验）
+//      → 逐层断言 mm 尺寸/viewBox/红色 0.1mm stroke/闭合 path/无 mask/filter/text
 // 用法：npm run build 后 node scripts/selftest-browser.mjs
 import { createServer } from 'node:http';
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync } from 'node:fs';
 import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -175,6 +177,121 @@ await page.waitForTimeout(300);
 await page.screenshot({ path: join(REPO, '.bake', 'selftest', 'drawer-2d.png') });
 await page.click('#btn-close-2d');
 
+/* ---- 票 15：SVG/ZIP 导出 —— 拦截下载流 → 解析 ZIP → 逐层断言 ---- */
+const exportBtnReady = await page.evaluate(() => {
+  const btn = document.getElementById('btn-export-zip');
+  return { exists: !!btn, disabled: btn?.disabled ?? true, title: btn?.title ?? '' };
+});
+
+const [download] = await Promise.all([
+  page.waitForEvent('download', { timeout: 15000 }),
+  page.click('#btn-export-zip'),
+]);
+const suggestedName = download.suggestedFilename();
+const dlPath = await download.path();
+const zipBytes = readFileSync(dlPath);
+mkdirSync(join(REPO, '.bake', 'selftest'), { recursive: true });
+copyFileSync(dlPath, join(REPO, '.bake', 'selftest', 'export.zip'));
+
+// 最小 ZIP 读取器：扫 local file header（我们导出的是 STORE，无 data descriptor）
+function parseStoreZip(buf) {
+  const files = {};
+  let off = 0;
+  while (off < buf.length - 4) {
+    if (buf.readUInt32LE(off) !== 0x04034b50) {
+      off++;
+      continue;
+    }
+    const flags = buf.readUInt16LE(off + 6);
+    const method = buf.readUInt16LE(off + 8);
+    const crc = buf.readUInt32LE(off + 14);
+    const compSize = buf.readUInt32LE(off + 18);
+    const uncompSize = buf.readUInt32LE(off + 22);
+    const nameLen = buf.readUInt16LE(off + 26);
+    const extraLen = buf.readUInt16LE(off + 28);
+    const name = buf.slice(off + 30, off + 30 + nameLen).toString('utf8');
+    const dataStart = off + 30 + nameLen + extraLen;
+    files[name] = { flags, method, crc, compSize, uncompSize, data: buf.slice(dataStart, dataStart + compSize) };
+    off = dataStart + compSize;
+  }
+  return files;
+}
+
+// CRC32（与导出端同表算法，独立实现校验）
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(data) {
+  let c = 0xffffffff;
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+const zipFiles = parseStoreZip(zipBytes);
+const zipNames = Object.keys(zipFiles).sort();
+const expectedNames = [...baked.layers.map((_, i) => `xiake-L${i + 1}.svg`), 'README.txt'].sort();
+const crcOk = Object.entries(zipFiles).every(([n, f]) => crc32(f.data) === f.crc);
+const storeOk = Object.values(zipFiles).every((f) => f.method === 0 && f.compSize === f.uncompSize && (f.flags & 0x0800) !== 0);
+
+const pxPerMm = baked.viewBox.split(/\s+/).map(Number)[2] / baked.sizeMm.width; // 11.84
+const expectedStroke = Number((0.1 * pxPerMm).toFixed(4)); // 1.184
+const layerSvgs = baked.layers.map((layer, i) => {
+  const entry = zipFiles[`xiake-L${i + 1}.svg`];
+  if (!entry) return { i, errors: ['missing from ZIP'] };
+  const text = entry.data.toString('utf8');
+  const errors = [];
+  const width = text.match(/width="([^"]+)"/)?.[1];
+  const height = text.match(/height="([^"]+)"/)?.[1];
+  const viewBox = text.match(/viewBox="([^"]+)"/)?.[1];
+  if (width !== `${baked.sizeMm.width}mm`) errors.push(`width=${width}`);
+  if (height !== `${baked.sizeMm.height}mm`) errors.push(`height=${height}`);
+  if (viewBox !== baked.viewBox) errors.push(`viewBox=${viewBox}`);
+  if (!text.includes('xmlns="http://www.w3.org/2000/svg"')) errors.push('missing xmlns');
+  const d = text.match(/<path [^>]*d="([^"]+)"/)?.[1];
+  const paths = text.match(/<path /g)?.length ?? 0;
+  if (paths !== 1) errors.push(`path count=${paths}`);
+  if (!d) errors.push('no path d');
+  else {
+    const mCount = (d.match(/M/g) ?? []).length;
+    const zCount = (d.match(/Z/g) ?? []).length;
+    if (mCount === 0 || mCount !== zCount || !/Z\s*$/.test(d)) errors.push(`open subpaths M=${mCount} Z=${zCount}`);
+    if (d !== layer.pathD.join(' ')) errors.push('path d != baked pathD');
+  }
+  if (!/fill="none"/.test(text)) errors.push('fill not none');
+  if (!/stroke="#FF0000"/.test(text)) errors.push('stroke not #FF0000');
+  const sw = Number(text.match(/stroke-width="([^"]+)"/)?.[1]);
+  if (!Number.isFinite(sw) || Math.abs(sw - expectedStroke) > 1e-6) errors.push(`stroke-width=${sw} expect ${expectedStroke}`);
+  if (Number.isFinite(sw) && Math.abs(sw / pxPerMm - 0.1) > 1e-9) errors.push('stroke-width != 0.1mm');
+  if (/<mask|<filter|<text|[\s"']mask=|[\s"']filter=/i.test(text)) errors.push('has mask/filter/text');
+  // 元素白名单：只允许 svg 与 path 标签（朴素 path 规范）
+  const tagNames = [...text.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9-]*)/g)].map((m) => m[2].toLowerCase());
+  if (tagNames.some((t) => t !== 'svg' && t !== 'path')) errors.push(`unexpected tags: ${[...new Set(tagNames.filter((t) => t !== 'svg' && t !== 'path'))].join(',')}`);
+  return { i, errors };
+});
+
+const readmeText = zipFiles['README.txt']?.data.toString('utf8') ?? '';
+const readmeErrors = [];
+for (const [label, re] of [
+  ['red cut note', /红色\s*\(?#FF0000\)?[^]*切割/],
+  ['blue engrave note', /蓝色[^]*刻痕/],
+  ['no engrave lines disclaimer', /没有蓝色刻痕线/],
+  ['cardstock 250-300g', /250-300g/],
+  ['kerf software-side', /kerf/i],
+  ['L1 near LED', /L1[^]*靠 LED/],
+  ['L6 near viewer', /L6[^]*观者/],
+]) {
+  if (!re.test(readmeText)) readmeErrors.push(`missing: ${label}`);
+}
+for (const layer of baked.layers) {
+  if (!readmeText.includes(layer.name)) readmeErrors.push(`missing layer name: ${layer.name}`);
+}
+
 await browser.close();
 server.close();
 
@@ -211,6 +328,19 @@ const checks = [
   { name: '2D L3 caution for gap < 2mm', pass: drawerL3.fabLine.includes('缝隙低于 2mm'), detail: drawerL3.fabLine },
   { name: 'solo list has 6 items', pass: info.soloItems === 6, detail: info.soloItems },
   { name: 'render non-blank', pass: pixels >= 12, detail: `${pixels} distinct colors` },
+  // ---- 票 15：SVG/ZIP 导出 ----
+  { name: 'export button enabled after load', pass: exportBtnReady.exists && !exportBtnReady.disabled && !exportBtnReady.title.includes('未通过'), detail: JSON.stringify(exportBtnReady) },
+  { name: 'download triggered with suggested filename', pass: suggestedName === 'xiake-layers.zip', detail: suggestedName },
+  { name: 'zip contains exactly 6 SVG + README.txt', pass: zipNames.length === 7 && JSON.stringify(zipNames) === JSON.stringify(expectedNames), detail: zipNames.join(',') },
+  { name: 'zip STORE method + UTF-8 flag + CRC32 all valid', pass: storeOk && crcOk, detail: `store=${storeOk} crc=${crcOk}` },
+  ...layerSvgs.map(
+    (s) => ({
+      name: `SVG L${s.i + 1}: mm size/viewBox/red 0.1mm stroke/closed plain path`,
+      pass: s.errors.length === 0,
+      detail: s.errors.join('; ') || 'ok',
+    }),
+  ),
+  { name: 'README: colors/cardstock/kerf/positions/layer names', pass: readmeErrors.length === 0, detail: readmeErrors.join('; ') || 'ok' },
 ];
 for (const c of checks) console.log(`${c.pass ? 'PASS' : 'FAIL'} ${c.name}${c.pass ? '' : ' :: ' + JSON.stringify(c.detail)}`);
 writeFileSync(

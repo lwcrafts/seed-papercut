@@ -1,6 +1,10 @@
-// 烘焙管线前半（issue 12）：场景图 → Seedream 5.0-pro 拆层 → Seed-Evolving 语义映射
-// → 按映射把各 z 层缩放回原画布合成 → alpha 二值化（闭运算 r=1 + 去 <64px 噪点）
-// → 输出 6 层二值蒙版 PNG（白=纸）到 .bake/<sceneId>/masks/。
+// 烘焙管线（issue 12 前半 + issue 13 后半）：
+//   场景图 → Seedream 5.0-pro 拆层 → Seed-Evolving 语义映射
+//   → 按映射把各 z 层缩放回原画布合成 → alpha 二值化（闭运算 r=1 + 去 <64px 噪点）
+//   → 6 层二值蒙版 PNG（白=纸）
+//   → 拓扑修复（4 邻接孤岛检测 + Dijkstra 最短桥 + DSU 链式，桥宽 3mm 圆头胶囊，
+//      缝隙红线 1mm：像素粗判 + 矢量化后精算两段式；开运算去毛刺；每层 3mm 外框纸环）
+//   → imagetracerjs 矢量化 → LayerSet v2 JSON → public/data/baked/<sceneId>.json
 //
 // 用法：
 //   npm run bake -- xiake            # 全链路；已有中间产物则复用（不重复花钱）
@@ -19,6 +23,8 @@ import { fileURLToPath } from 'node:url';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { PNG } from 'pngjs';
 import { runMaskChecks } from './check-masks.mjs';
+import { openMask, closeMaskDisc, addFrameRing, repairTopology, minGapPxRidge, healNarrowGaps, median3, connectedComponents } from './topology.mjs';
+import { vectorizeMask } from './vectorize.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TIMEOUT_MS = 600_000;
@@ -232,7 +238,14 @@ async function evolveOnce(body, attempt) {
 const THRESHOLD = 128;
 const CLOSE_R = 1;          // 闭运算半径（工作分辨率，重连细链断裂）
 const DESPECKLE_AREA = 64;  // 小于该面积的独立白区视为噪点（工作分辨率）
-const SCALE = 0.5;          // 形态学在半分辨率上跑（spike 验证过的参数），蒙版导出全分辨率
+const SCALE = 0.5;          // 形态学/拓扑/矢量化在半分辨率上跑（spike 验证参数），蒙版导出全分辨率
+
+// ---------- 冻结规格（spec §3 + 票 09 作者拍板参数） ----------
+const SIZE_MM = { width: 200, height: 150 }; // 成品物理尺寸
+const BRIDGE_WIDTH_MM = 3;   // 桥宽（真实卡纸）
+const GAP_REDLINE_MM = 1;    // 最小镂空缝隙红线：低于判 fail（像素粗判+矢量精算两段式）
+const RING_MM = 3;           // 每层外框纸环宽度（孤岛锚定目标，藏在灯箱框边后面）
+const OPEN_R_PX = 1;         // 开运算半径（工作分辨率，轻量去毛刺）
 
 function loadAlpha(pngPath, bbox, CW, CH) {
   const png = PNG.sync.read(readFileSync(pngPath));
@@ -303,6 +316,7 @@ function despeckle(w, h, px, minArea) {
 }
 
 function binarizeLayers(decomposeRec, evolveRec) {
+  const cleanedMasks = new Map(); // L -> 工作分辨率清理后蒙版（issue 13 后半的输入）
   const items = decomposeRec.sanitized.data;
   const base = items.find((it) => it.name == null);
   const layers = items.filter((it) => it.name != null);
@@ -356,6 +370,7 @@ function binarizeLayers(decomposeRec, evolveRec) {
       small[y * TW + x] = alpha[Math.min(CH - 1, Math.round(y / SCALE)) * CW + Math.min(CW - 1, Math.round(x / SCALE))] >= THRESHOLD ? 1 : 0;
     }
     const cleaned = despeckle(TW, TH, closeMask(TW, TH, small, CLOSE_R), DESPECKLE_AREA);
+    cleanedMasks.set(L, cleaned);
     // 全分辨率导出（白=纸）
     const png = new PNG({ width: CW, height: CH });
     for (let y = 0; y < CH; y++) {
@@ -374,7 +389,191 @@ function binarizeLayers(decomposeRec, evolveRec) {
     meta.layers.push({ index: L, sources: zsL.map((m) => ({ z: m.z, name: m.name })), mask: `masks/L${L}.png` });
   }
   writeFileSync(join(BAKE, 'bake-meta.json'), JSON.stringify(meta, null, 2));
-  return meta;
+  return { meta, cleanedMasks };
+}
+
+// ---------- step 4（issue 13 后半）：拓扑修复 + 矢量化 + LayerSet v2 ----------
+
+function bakeLayerSet(decomposeRec, evolveRec, bakeMeta, cleanedMasks) {
+  const CW = bakeMeta.canvas.w;
+  const CH = bakeMeta.canvas.h;
+  const TW = Math.round(CW * SCALE);
+  const TH = Math.round(CH * SCALE);
+  const pxPerMmWork = TW / SIZE_MM.width; // trace/拓扑工作分辨率下的像素每毫米
+  const scale = CW / TW;                  // trace 坐标 → viewBox（全分辨率）坐标
+  const pxPerMmView = CW / SIZE_MM.width; // viewBox 分辨率下的像素每毫米（记录进 pipeline）
+  const ringPx = Math.max(1, Math.round(RING_MM * pxPerMmWork));
+  const bridgeRadiusPx = Math.max(1, Math.round((BRIDGE_WIDTH_MM * pxPerMmWork - 1) / 2)); // capsule 宽 = 2r+1 ≈ 3mm
+  // 蒙版域缝隙目标 = 红线 + 2px：盖住矢量化轮廓相对像素边界的内缩（~1.5px）与量化误差，
+  // 否则蒙版上恰好 1mm 的缝，矢量化后精算会低于红线
+  const gapTargetPx = GAP_REDLINE_MM * pxPerMmWork + 2;
+  const gapCloseR = Math.max(1, Math.ceil(gapTargetPx / 2));
+  const round2 = (v) => Math.round(v * 100) / 100;
+
+  // evolving 给的每层名称/归并说明
+  const evolvedLayers = new Map((evolveRec.parsed?.layers ?? []).map((l) => [l.index, l]));
+
+  const layers = [];
+  const vectorStage = [];
+  for (let L = 1; L <= 6; L++) {
+    let m = { w: TW, h: TH, px: cleanedMasks.get(L).slice() };
+
+    // 中值滤波去锯齿/发丝缝 + 轻量形态学开运算去毛刺（票 09 拍板 6）
+    m = median3(m, 2);
+    m = openMask(m, OPEN_R_PX);
+    // 缝隙预闭合：把整段都窄于目标的黑缝物理填掉（激光烧穿不可切）
+    m = closeMaskDisc(m, gapCloseR);
+    // 闭运算填不掉的瓶颈窄槽按槽中心线判据逐个填掉
+    const heal1 = healNarrowGaps(m, gapTargetPx);
+    const islandsBeforeRing = connectedComponents(m).comps.filter((c) => !c.touchesBorder).length;
+
+    // 外框纸环：孤岛锚定目标（每张雕刻纸物理上都有保留边框）
+    addFrameRing(m, ringPx);
+
+    // 拓扑修复：4 邻接孤岛检测 + Dijkstra 最短桥 + DSU 链式；桥以 3mm 圆头胶囊落进蒙版，
+    // 矢量化后自然成为矩形/圆头桥几何（票 09 拍板 4）
+    const rep = repairTopology(m, bridgeRadiusPx);
+    if (!rep.pass) throw new Error(`L${L} 加桥后仍有 ${rep.islandsAfter} 个孤岛`);
+
+    // 加桥后再闭合+焊接一次：愈合胶囊两侧可能残留的窄黑缝
+    m = closeMaskDisc(m, gapCloseR);
+    const heal2 = healNarrowGaps(m, gapTargetPx);
+
+    // 缝隙两段式（票 09 拍板 3）：镂空内切宽度（距离场局部极大，即槽中心线）
+    // 1) 像素粗判：工作分辨率蒙版；2) 矢量化后精算：同一几何上采样到全分辨率
+    //    （矢量化所表示的精确几何）再算内切宽度（格点精度翻倍，0.084mm/px）。
+    //    粗格点对斜缝宽度有 ~1.5x 高估，精算若仍低于红线，则回到全分辨率蒙版上
+    //    精修一轮窄槽（涂白+OR 回写工作蒙版），直到精算达标。
+    const countIslands = (mm) => connectedComponents(mm).comps.filter((c) => !c.touchesBorder).length;
+    const gapTargetFullPx = GAP_REDLINE_MM * pxPerMmView + 2;
+    const upsampleFull = () => {
+      const fullPx = new Uint8Array(CW * CH);
+      for (let y = 0; y < CH; y++) {
+        const row = (y >> 1) * TW;
+        const dst = y * CW;
+        for (let x = 0; x < CW; x++) fullPx[dst + x] = m.px[row + (x >> 1)];
+      }
+      return { w: CW, h: CH, px: fullPx };
+    };
+    let fullGapPx = 0;
+    for (let pass = 0; pass < 3; pass++) {
+      fullGapPx = minGapPxRidge(upsampleFull());
+      if (fullGapPx >= gapTargetFullPx) break;
+      const full = upsampleFull();
+      healNarrowGaps(full, gapTargetFullPx);
+      for (let y = 0; y < CH; y++) {
+        const src = y * CW;
+        const dst = (y >> 1) * TW;
+        for (let x = 0; x < CW; x++) {
+          if (full.px[src + x] === 1) m.px[dst + (x >> 1)] = 1; // OR 回写（只会填纸，不生孤岛）
+        }
+      }
+      const isl = countIslands(m);
+      if (isl > 0) throw new Error(`L${L} 全分辨率缝隙精修后出现孤岛 ${isl}`);
+    }
+    const pixelGapPx = minGapPxRidge(m);
+    const pixelGapMm = round2(pixelGapPx / pxPerMmWork);
+    const fullGapMm = round2(fullGapPx / pxPerMmView);
+    const vec = vectorizeMask(m, { scale, pxPerMm: pxPerMmWork });
+    const minGapMm = Math.min(pixelGapMm, fullGapMm);
+    const islandsFinal = countIslands(m);
+    const pass = islandsFinal === 0 && minGapMm >= GAP_REDLINE_MM && vec.pathD.length > 0;
+
+    const ev = evolvedLayers.get(L);
+    const sources = bakeMeta.layers[L - 1].sources.map((s) => s.name).join(' + ');
+    layers.push({
+      index: L,
+      name: ev?.name ?? `第 ${L} 层`,
+      depth: round2(L * 0.05), // 相对 LED 面的层深（0.05 = 5mm 层距）
+      description: ev?.mergeNotes ?? sources,
+      pathD: vec.pathD,
+      fabCheck: {
+        islands: rep.islands,
+        bridgesAdded: rep.bridges.map((b) => ({
+          fromId: b.fromId,
+          toTarget: b.toTarget,
+          lengthMm: round2(b.lengthPx / pxPerMmWork),
+          startPx: [Math.round(b.startPx[0] * scale), Math.round(b.startPx[1] * scale)],
+          endPx: [Math.round(b.endPx[0] * scale), Math.round(b.endPx[1] * scale)],
+        })),
+        cutLengthMm: vec.cutLengthMm,
+        minGapMm,
+        pass,
+      },
+    });
+    vectorStage.push({
+      layer: L,
+      islandsBeforeRepair: islandsBeforeRing,
+      islandsAfterRepair: rep.islandsAfter,
+      bridgeWidthMm: round2((2 * bridgeRadiusPx + 1) / pxPerMmWork),
+      bridgesAdded: rep.bridges.length,
+      healIters: [heal1, heal2],
+      contours: vec.contourCount,
+      subpaths: vec.pathD.length,
+      minGapPixelMm: pixelGapMm,
+      minGapFullResMm: fullGapMm,
+      minGapMethod: 'inscribed width of hollow regions (distance-transform local maxima); coarse @workRes, refined @viewBox res',
+    });
+    log(`L${L} 「${layers[L - 1].name}」 孤岛=${rep.islands.length}→${rep.islandsAfter} 桥=${rep.bridges.length} 切割=${vec.cutLengthMm}mm 缝隙=${minGapMm}mm(粗判 ${pixelGapMm}/精算 ${fullGapMm}) pass=${pass}`);
+
+    // 调试 SVG（.bake 内，不进 public；正式 mm 制 SVG 导出是票 15）
+    const svgDir = join(BAKE, 'svg');
+    mkdirSync(svgDir, { recursive: true });
+    writeFileSync(
+      join(svgDir, `L${L}.svg`),
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${CW} ${CH}"><path fill="#111" fill-rule="evenodd" d="${layers[L - 1].pathD.join(' ')}"/></svg>\n`,
+    );
+  }
+
+  const layerSet = {
+    schemaVersion: 2,
+    sceneId,
+    sourceImage: scene.image,
+    viewBox: `0 0 ${CW} ${CH}`,
+    sizeMm: SIZE_MM,
+    layers,
+    pipeline: {
+      decomposeModel: decomposeRec.model,
+      mapModel: evolveRec.model,
+      zItems: bakeMeta.decompose.zItems,
+      mapSource: 'evolving',
+      bakedAt: new Date().toISOString(),
+      // 物理尺寸换算：viewBox 像素 ↔ mm（200×150mm 成品）
+      pxPerMm: round2(pxPerMmView),
+      workRes: { w: TW, h: TH, scale: SCALE },
+      pxPerMmWork: round2(pxPerMmWork),
+      topology: {
+        bridgeWidthMm: BRIDGE_WIDTH_MM,
+        bridgeRadiusPx,
+        gapRedLineMm: GAP_REDLINE_MM,
+        gapTargetPx: round2(gapTargetPx),
+        gapCloseRadiusPx: gapCloseR,
+        medianPasses: 2,
+        openRadiusPx: OPEN_R_PX,
+        frameRingMm: RING_MM,
+        frameRingPx: ringPx,
+        connectivity: '4-neighbor BFS',
+        bridgeSearch: '8-neighbor weighted Dijkstra + DSU chain',
+      },
+      tracer: { name: 'imagetracerjs', version: '1.2.6', license: 'Unlicense', ltres: 1, qtres: 1, pathomit: 8, roundcoords: 1 },
+      maskStage: {
+        threshold: THRESHOLD,
+        closeRadiusPx: CLOSE_R,
+        despeckleAreaPx: DESPECKLE_AREA,
+        decompose: bakeMeta.decompose,
+        evolve: { model: bakeMeta.evolve.model, at: bakeMeta.evolve.at, ms: bakeMeta.evolve.ms },
+        layers: bakeMeta.layers.map((l) => ({ index: l.index, sources: l.sources })),
+      },
+      vectorStage,
+    },
+  };
+
+  const outDir = join(REPO, 'public', 'data', 'baked');
+  mkdirSync(outDir, { recursive: true });
+  const outPath = join(outDir, `${sceneId}.json`);
+  writeFileSync(outPath, JSON.stringify(layerSet));
+  log(`LayerSet v2 -> ${outPath} (${(JSON.stringify(layerSet).length / 1024).toFixed(0)}KB)`);
+  return layerSet;
 }
 
 // ---------- main ----------
@@ -383,19 +582,23 @@ mkdirSync(ARCHIVE, { recursive: true });
 const t0 = Date.now();
 const decomposeRec = await decompose();
 const evolveRec = await evolve(decomposeRec);
-const meta = binarizeLayers(decomposeRec, evolveRec);
+const { meta, cleanedMasks } = binarizeLayers(decomposeRec, evolveRec);
+const layerSet = bakeLayerSet(decomposeRec, evolveRec, meta, cleanedMasks);
 
 // 存档（脱敏）到 .scratch/seed-papercut/research/bake-run/，文章留证用
 copyFileSync(join(BAKE, 'decompose.json'), join(ARCHIVE, 'decompose-response.json'));
 copyFileSync(join(BAKE, 'evolve-map.json'), join(ARCHIVE, 'evolve-map.json'));
 copyFileSync(join(BAKE, 'bake-meta.json'), join(ARCHIVE, 'bake-meta.json'));
+copyFileSync(join(REPO, 'public', 'data', 'baked', `${sceneId}.json`), join(ARCHIVE, `${sceneId}.layerset.json`));
 
 const checks = runMaskChecks(meta);
 writeFileSync(join(BAKE, 'checks.json'), JSON.stringify(checks, null, 2));
 copyFileSync(join(BAKE, 'checks.json'), join(ARCHIVE, 'checks.json'));
 
+const allPass = checks.pass && layerSet.layers.every((l) => l.fabCheck.pass);
 log(`完成，总耗时 ${((Date.now() - t0) / 1000).toFixed(0)}s，产物在 ${BAKE}`);
-if (!checks.pass) {
-  log('蒙版语义自查未通过（见 .bake/xiake/checks.json）');
+if (!allPass) {
+  if (!checks.pass) log('蒙版语义自查未通过（见 .bake/xiake/checks.json）');
+  if (!layerSet.layers.every((l) => l.fabCheck.pass)) log('存在 fabCheck.pass=false 的图层');
   process.exit(2);
 }

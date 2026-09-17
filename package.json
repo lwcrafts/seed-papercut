@@ -9,13 +9,15 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "bake": "node scripts/bake.mjs",
-    "bake:check": "node scripts/check-masks.mjs"
+    "bake:check": "node scripts/check-masks.mjs",
+    "selftest:browser": "node scripts/selftest-browser.mjs"
   },
   "dependencies": {
     "three": "^0.179.0"
   },
   "devDependencies": {
     "@types/three": "^0.179.0",
+    "playwright": "^1.63.0",
     "pngjs": "^7.0.0",
     "typescript": "~5.6.0",
     "undici": "^8.10.2",

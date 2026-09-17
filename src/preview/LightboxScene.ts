@@ -22,12 +22,14 @@ interface LayerTheme {
 }
 
 // Front layers read as deep silhouettes; back layers transmit warm light.
+// Index = distance from viewer (0 = L6 观者侧 … 5 = L1 LED 侧最亮)。
 const LAYER_THEMES: LayerTheme[] = [
   { darkBase: 0x241812, darkEmissiveMult: 0.05, lightBase: 0xf5f2eb },
   { darkBase: 0x4a3224, darkEmissiveMult: 0.16, lightBase: 0xf8f5ee },
   { darkBase: 0x7e5233, darkEmissiveMult: 0.35, lightBase: 0xfbf8f2 },
   { darkBase: 0xbf7e3d, darkEmissiveMult: 0.65, lightBase: 0xfdfaf5 },
   { darkBase: 0xf5c165, darkEmissiveMult: 1.05, lightBase: 0xfffdfa },
+  { darkBase: 0xf9d489, darkEmissiveMult: 1.25, lightBase: 0xfffdfb },
 ];
 
 function themeFor(index: number, total: number): LayerTheme {
@@ -369,8 +371,12 @@ export class LightboxScene {
     this.paperGroup.clear();
     this.paperMeshes = [];
     const vb = parseViewBox(set.viewBox);
+    const n = set.layers.length;
 
+    // 层序：layers[0] = L1 靠 LED（最靠背板），最后一层靠观者。
+    // 装配坐标里 paperZ[0] 是最靠前（+Z 观者侧）的槽位，故第 idx 层落在 slot = n-1-idx。
     set.layers.forEach((layer, idx) => {
+      const slot = n - 1 - idx;
       try {
         const geometry = buildPaperGeometry(layer.pathD, vb);
         const material = new THREE.MeshStandardMaterial({
@@ -384,7 +390,7 @@ export class LightboxScene {
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         mesh.userData = { layerIndex: idx, name: layer.name, depth: layer.depth };
-        mesh.position.z = this.plan.paperZ[idx];
+        mesh.position.z = this.plan.paperZ[slot];
         this.paperGroup.add(mesh);
         this.paperMeshes.push(mesh);
       } catch (err) {
@@ -400,13 +406,15 @@ export class LightboxScene {
   private applyExplode(progress: number): void {
     this.explode = progress;
     const p = this.plan;
+    const n = this.plan.layerCount;
     const lerp = THREE.MathUtils.lerp;
 
     if (this.frame) this.frame.position.z = lerp(p.frameZ, p.frameExplodedZ, progress);
     if (this.glass) this.glass.position.z = lerp(p.glassZ, p.glassExplodedZ, progress);
 
     this.paperMeshes.forEach((mesh, idx) => {
-      mesh.position.z = lerp(p.paperZ[idx], p.paperExplodedZ[idx], progress);
+      const slot = n - 1 - idx; // 与 buildPaperLayers 的层序映射一致
+      mesh.position.z = lerp(p.paperZ[slot], p.paperExplodedZ[slot], progress);
     });
     this.spacers.forEach((mesh, idx) => {
       mesh.position.z = lerp(p.spacerZ[idx], p.spacerExplodedZ[idx], progress);
@@ -473,7 +481,9 @@ export class LightboxScene {
       mat.transparent = dimmed;
       mat.opacity = dimmed ? 0.15 : 1.0;
 
-      const theme = themeFor(idx, total);
+      // 主题按视距排：靠观者的层是深色剪影（theme 0），靠 LED 的层最亮（theme n-1）。
+      // mesh 数组顺序 = layers 顺序（L1 靠 LED 在前），故主题下标取 total-1-idx。
+      const theme = themeFor(total - 1 - idx, total);
       if (darkRoom) {
         mat.color.setHex(theme.darkBase);
         if (translucent) {

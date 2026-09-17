@@ -3,12 +3,11 @@ import { LightboxScene, type CameraViewName, type StructurePart } from '../previ
 import { parseViewBox, type FabCheck, type Layer, type LayerSet } from '../types';
 
 const EMPTY_FAB: FabCheck = {
-  islands: null,
-  bridgesAdded: null,
-  cutLengthMm: null,
-  closed: null,
-  selfIntersecting: null,
-  pass: null,
+  islands: [],
+  bridgesAdded: [],
+  cutLengthMm: 0,
+  minGapMm: 0,
+  pass: false,
 };
 
 function $<T extends HTMLElement>(id: string): T {
@@ -22,20 +21,22 @@ interface LegacyLayer {
   name?: string;
   depth?: number;
   description?: string;
-  pathD?: string;
+  pathD?: string | string[];
   svgPath?: string;
   svgContent?: string;
-  fabCheck?: FabCheck;
+  fabCheck?: Partial<FabCheck>;
 }
 
 interface LegacyLayerSet {
   sceneId?: string;
   sourceImage?: string;
   viewBox?: string;
+  sizeMm?: { width: number; height: number };
+  pipeline?: unknown;
   layers?: LegacyLayer[];
 }
 
-/** Accept the current LayerSet shape plus the legacy v1 JSON ({layers:[{svgPath,svgContent}]}). */
+/** Accept LayerSet v2 plus the legacy v1 JSON ({layers:[{svgPath,svgContent}]}). */
 function normalizeLayerSet(raw: unknown, fallbackSceneId = 'uploaded-layers'): LayerSet {
   const container: LegacyLayerSet = Array.isArray(raw)
     ? { layers: raw as LegacyLayer[] }
@@ -46,27 +47,43 @@ function normalizeLayerSet(raw: unknown, fallbackSceneId = 'uploaded-layers'): L
   }
 
   const layers: Layer[] = rawLayers.map((l, idx) => {
-    let pathD = l.pathD ?? l.svgPath ?? '';
-    if (!pathD && l.svgContent) {
-      const matches = [...l.svgContent.matchAll(/\bd="([^"]+)"/g)];
-      pathD = matches.map((m) => m[1]).join(' ');
+    let pathD: string[] = Array.isArray(l.pathD) ? l.pathD : l.pathD ? [l.pathD] : [];
+    if (pathD.length === 0 && l.svgPath) pathD = [l.svgPath];
+    if (pathD.length === 0 && l.svgContent) {
+      pathD = [...l.svgContent.matchAll(/\bd="([^"]+)"/g)].map((m) => m[1]);
     }
-    if (!pathD) throw new Error(`第 ${idx + 1} 层缺少 pathD (svg path d)`);
+    if (pathD.length === 0) throw new Error(`第 ${idx + 1} 层缺少 pathD (svg path d)`);
     return {
       index: l.index ?? idx + 1,
       name: l.name ?? `图层 L${idx + 1}`,
       depth: typeof l.depth === 'number' ? l.depth : Number(((idx + 1) * 0.2).toFixed(2)),
       description: l.description ?? `第 ${idx + 1} 层`,
       pathD,
-      fabCheck: l.fabCheck ?? EMPTY_FAB,
+      fabCheck: (l.fabCheck as FabCheck) ?? EMPTY_FAB,
     };
   });
 
   return {
+    schemaVersion: 2,
     sceneId: container.sceneId ?? fallbackSceneId,
     sourceImage: container.sourceImage ?? '',
     viewBox: container.viewBox ?? '0 0 800 600',
+    sizeMm: container.sizeMm ?? { width: 200, height: 150 },
     layers,
+    pipeline: (container.pipeline as LayerSet['pipeline']) ?? {
+      decomposeModel: '',
+      mapModel: '',
+      zItems: 0,
+      mapSource: 'upload',
+      bakedAt: '',
+      pxPerMm: 0,
+      workRes: { w: 0, h: 0, scale: 1 },
+      pxPerMmWork: 0,
+      topology: {},
+      tracer: {},
+      maskStage: {},
+      vectorStage: [],
+    },
   };
 }
 
@@ -312,7 +329,7 @@ function render2D(): void {
   const svg = document.createElementNS(svgNS, 'svg');
   svg.setAttribute('viewBox', `${vb.minX} ${vb.minY} ${vb.width} ${vb.height}`);
   const path = document.createElementNS(svgNS, 'path');
-  path.setAttribute('d', layer.pathD);
+  path.setAttribute('d', layer.pathD.join(' '));
   path.setAttribute('fill-rule', 'evenodd');
   path.setAttribute('fill', isLaser ? '#151922' : '#f5f1e8');
   path.setAttribute('stroke', isLaser ? '#ef4444' : '#8d7b68');
@@ -372,13 +389,16 @@ function loadSet(set: LayerSet): void {
 async function bootstrap(): Promise<void> {
   setExplode(0);
   try {
-    const res = await fetch(`${import.meta.env.BASE_URL}data/baked/example-layers.json`);
+    const res = await fetch(`${import.meta.env.BASE_URL}data/baked/xiake.json`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    loadSet(normalizeLayerSet(await res.json(), 'example-horse-rider'));
+    const set = normalizeLayerSet(await res.json(), 'xiake');
+    loadSet(set);
+    // 自测/调试句柄（不影响 UI）
+    (window as unknown as Record<string, unknown>).__seedPapercut = { scene, layerSet: set };
   } catch (err) {
     console.error('failed to load baked layer set', err);
-    $('data-status-text').textContent = '示例图层载入失败';
-    showToast('示例图层数据载入失败，请用“载入 JSON”选择本地文件');
+    $('data-status-text').textContent = '烘焙图层载入失败';
+    showToast('烘焙图层数据载入失败，请用“载入 JSON”选择本地文件');
   }
 }
 

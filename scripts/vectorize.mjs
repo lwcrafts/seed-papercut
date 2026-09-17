@@ -45,10 +45,6 @@ function segmentsLengthPx(segments) {
   return len;
 }
 
-function segEnd(s) {
-  return s.type === 'Q' ? [s.x3, s.y3] : [s.x2, s.y2];
-}
-
 // 把 imagetracer 的段转成 d 子路径字符串（M ... L/Q ... Z），坐标 ×scale
 function segmentsToD(segments, scale, roundcoords) {
   const r = (v) => +(v * scale).toFixed(roundcoords);
@@ -65,7 +61,7 @@ function segmentsToD(segments, scale, roundcoords) {
 
 /**
  * 矢量化一层蒙版。
- * 返回 { pathD: string[], cutLengthMm, minGapMmVector, contourCount }
+ * 返回 { pathD: string[], cutLengthMm, contourCount }
  *  - pathD：每条外轮廓（含其洞）一个 d 串（坐标已 ×scale 到 viewBox 分辨率），
  *    供 evenodd 填充
  *  - cutLengthMm：全部轮廓周长的矢量精算（含纸外框矩形边），mm

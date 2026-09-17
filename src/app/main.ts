@@ -336,9 +336,170 @@ function render2D(): void {
   path.setAttribute('stroke-width', isLaser ? '1.6' : '1');
   svg.appendChild(path);
 
+  /* fabCheck 叠加：桥位胶囊（黄色）+ 未修复孤岛 bbox（红色虚线）。仅绘制 JSON 里真实存在的几何。 */
+  const fc = layer.fabCheck;
+  const has = hasFabData(layer);
+  let bridgesDrawn = 0;
+  let unrepaired = 0;
+  if (has) {
+    const pxPerMm =
+      set.pipeline && set.pipeline.pxPerMm > 0
+        ? set.pipeline.pxPerMm
+        : vb.width / (set.sizeMm.width || vb.width);
+    const topo = set.pipeline?.topology as { bridgeWidthMm?: unknown } | undefined;
+    const bridgeWidthMm = typeof topo?.bridgeWidthMm === 'number' ? topo.bridgeWidthMm : 3;
+    const bridgeWpx = bridgeWidthMm * pxPerMm;
+
+    for (const b of fc.bridgesAdded) {
+      if (!b.startPx || !b.endPx) continue;
+      const line = document.createElementNS(svgNS, 'line');
+      line.setAttribute('x1', String(b.startPx[0]));
+      line.setAttribute('y1', String(b.startPx[1]));
+      line.setAttribute('x2', String(b.endPx[0]));
+      line.setAttribute('y2', String(b.endPx[1]));
+      line.setAttribute('stroke', '#fbbf24');
+      line.setAttribute('stroke-width', String(bridgeWpx));
+      line.setAttribute('stroke-linecap', 'round');
+      line.setAttribute('opacity', '0.9');
+      svg.appendChild(line);
+      bridgesDrawn++;
+    }
+    const covered = new Set<number>();
+    for (const b of fc.bridgesAdded) {
+      covered.add(b.fromId);
+      if (typeof b.toTarget === 'number') covered.add(b.toTarget);
+    }
+    for (const isl of fc.islands) {
+      if (covered.has(isl.id)) continue;
+      const rect = document.createElementNS(svgNS, 'rect');
+      rect.setAttribute('x', String(isl.bbox.x));
+      rect.setAttribute('y', String(isl.bbox.y));
+      rect.setAttribute('width', String(isl.bbox.w));
+      rect.setAttribute('height', String(isl.bbox.h));
+      rect.setAttribute('class', 'fab-island-marker');
+      svg.appendChild(rect);
+      unrepaired++;
+    }
+  }
+
   const containerEl = $('svg-preview-container');
   containerEl.innerHTML = '';
   containerEl.appendChild(svg);
+
+  /* 本层 fabCheck 摘要 + 缝隙提示 */
+  const fabLine = $('card-fab-line');
+  fabLine.innerHTML = '';
+  const legend = $('card-fab-legend');
+  if (!has) {
+    fabLine.textContent = '本层无制造检查数据';
+    legend.classList.add('hidden');
+  } else {
+    const after = unrepairedIslandCount(layer);
+    const parts: Array<{ text: string; cls?: string }> = [
+      { text: `孤岛 ${fc.islands.length}→${after}` },
+      { text: `加桥 ${fc.bridgesAdded.length}` },
+      { text: `切割 ${fmtMm(fc.cutLengthMm)} mm` },
+      { text: `缝隙 ${fmtMm(fc.minGapMm)} mm` },
+    ];
+    if (fc.minGapMm > 0 && fc.minGapMm < GAP_CAUTION_MM) {
+      parts.push({ text: '缝隙低于 2mm，装裱与运输时注意', cls: 'warn' });
+    }
+    if (!fc.pass || after > 0) {
+      parts.push({ text: '本层未通过制造检查', cls: 'island-warn' });
+    }
+    for (const p of parts) {
+      const span = document.createElement('span');
+      span.textContent = p.text;
+      if (p.cls) span.className = p.cls;
+      fabLine.appendChild(span);
+    }
+    legend.classList.toggle('hidden', bridgesDrawn === 0 && unrepaired === 0);
+  }
+}
+
+/* ---------------- fab check panel (all numbers read straight from LayerSet JSON) ---------------- */
+
+/** 2D 视图缝隙提示阈值（展示用，非核验数据）；核验红线以 pipeline.topology.gapRedLineMm 为准 */
+const GAP_CAUTION_MM = 2;
+
+function hasFabData(layer: Layer): boolean {
+  const fc = layer.fabCheck;
+  return fc.cutLengthMm > 0 || fc.islands.length > 0 || fc.bridgesAdded.length > 0;
+}
+
+/** 修复后仍未锚定的孤岛数：未被任何桥（fromId / 数字 toTarget）覆盖的孤岛 */
+function unrepairedIslandCount(layer: Layer): number {
+  const covered = new Set<number>();
+  for (const b of layer.fabCheck.bridgesAdded) {
+    covered.add(b.fromId);
+    if (typeof b.toTarget === 'number') covered.add(b.toTarget);
+  }
+  return layer.fabCheck.islands.filter((i) => !covered.has(i.id)).length;
+}
+
+function fmtMm(n: number): string {
+  return (Math.round(n * 100) / 100).toString();
+}
+
+function renderFabPanel(set: LayerSet): void {
+  const layers = set.layers;
+  const withData = layers.filter(hasFabData);
+  const passCount = withData.filter((l) => l.fabCheck.pass).length;
+  const allPass = withData.length > 0 && passCount === withData.length;
+
+  const badge = $('fab-pass-badge');
+  if (withData.length === 0) {
+    badge.textContent = '无检查数据';
+    badge.className = 'fab-badge none';
+  } else {
+    badge.textContent = allPass
+      ? `全部通过 ${passCount}/${withData.length}`
+      : `${passCount}/${withData.length} 层通过`;
+    badge.className = `fab-badge ${allPass ? 'ok' : 'fail'}`;
+  }
+  $('fab-meta').textContent = `${layers.length} 层 · 场景 ${set.sceneId}`;
+
+  const totalCut = withData.reduce((s, l) => s + l.fabCheck.cutLengthMm, 0);
+  const totalBridges = withData.reduce((s, l) => s + l.fabCheck.bridgesAdded.length, 0);
+  const gaps = withData.map((l) => l.fabCheck.minGapMm).filter((g) => g > 0);
+  $('fab-total-cut').textContent = withData.length > 0 ? (Math.round(totalCut * 10) / 10).toString() : '--';
+  $('fab-total-bridges').textContent = withData.length > 0 ? String(totalBridges) : '--';
+  $('fab-min-gap').textContent = gaps.length > 0 ? fmtMm(Math.min(...gaps)) : '--';
+
+  const rows = $('fab-rows');
+  rows.innerHTML = '';
+  layers.forEach((layer, idx) => {
+    const fc = layer.fabCheck;
+    const has = hasFabData(layer);
+    const after = has ? unrepairedIslandCount(layer) : 0;
+    const row = document.createElement('div');
+    row.className = `fab-row${has && !fc.pass ? ' fail' : ''}`;
+    row.innerHTML =
+      '<div class="fab-row-head">' +
+      '<span class="solo-badge"></span>' +
+      '<span class="fab-row-name"></span>' +
+      `<span class="fab-mini ${has ? (fc.pass ? 'ok' : 'fail') : 'none'}">${has ? (fc.pass ? '通过' : '未通过') : '无数据'}</span>` +
+      '</div>' +
+      '<div class="fab-row-metrics mono">' +
+      (has
+        ? `<span>孤岛 <b class="${after > 0 ? 'island-warn' : ''}">${fc.islands.length}→${after}</b></span>`
+        : '<span>孤岛 --</span>') +
+      `<span>加桥 ${has ? fc.bridgesAdded.length : '--'}</span>` +
+      `<span>切割 ${has ? fmtMm(fc.cutLengthMm) : '--'} mm</span>` +
+      `<span>缝隙 <b class="${has && fc.minGapMm > 0 && fc.minGapMm < GAP_CAUTION_MM ? 'warn' : ''}">${has ? fmtMm(fc.minGapMm) : '--'}</b> mm</span>` +
+      '</div>';
+    (row.querySelector('.solo-badge') as HTMLElement).textContent = `L${idx + 1}`;
+    (row.querySelector('.fab-row-name') as HTMLElement).textContent = layer.name;
+    rows.appendChild(row);
+  });
+
+  const panel = $('fab-panel');
+  panel.classList.toggle('fail', withData.length > 0 && !allPass);
+  const topo = set.pipeline?.topology as { gapRedLineMm?: unknown } | undefined;
+  const redLine = typeof topo?.gapRedLineMm === 'number' ? topo.gapRedLineMm : null;
+  $('fab-note').textContent =
+    '检查在烘焙阶段由本地几何算法完成，此面板直读其结果。' +
+    (redLine != null ? `通过 = 修复后 0 孤岛且缝隙不低于红线 ${fmtMm(redLine)}mm。` : '');
 }
 
 /* ---------------- screenshot & file load ---------------- */
@@ -378,6 +539,7 @@ function loadSet(set: LayerSet): void {
   scene.setCameraView('perspective');
   renderSoloList(set);
   renderDrawerTabs(set);
+  renderFabPanel(set);
   render2D();
   const vb = parseViewBox(set.viewBox);
   $('data-status-text').textContent = `${set.layers.length} 图层装配就绪 (${vb.width}x${vb.height})`;

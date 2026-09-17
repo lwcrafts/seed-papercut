@@ -188,21 +188,93 @@ input[type="color"] { width: 26px; height: 26px; padding: 0; border: none; backg
 .switch-desc { font-size: 10px; color: var(--text-faint); display: block; margin-top: 3px; }
 input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--amber); }
 
-.fab-placeholder {
+/* ---------- fab check panel (structure tab) ---------- */
+.fab-panel {
   margin-top: 4px;
-  padding: 14px;
+  padding: 13px 14px;
   border-radius: 11px;
-  border: 1px dashed var(--border-strong);
-  background: rgba(10, 13, 20, 0.55);
-  opacity: 0.75;
+  border: 1px solid var(--border);
+  background: rgba(8, 11, 18, 0.7);
 }
-.fab-title { font-size: 12px; font-weight: 700; color: var(--text-dim); margin-bottom: 6px; }
-.fab-desc { font-size: 11px; line-height: 1.65; color: var(--text-faint); }
-.fab-fields { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.fab-fields span {
-  font-size: 10px; color: var(--text-faint);
-  border: 1px solid var(--border); border-radius: 999px;
-  padding: 3px 9px;
+.fab-panel.fail { border-color: rgba(248, 113, 113, 0.45); }
+.fab-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.fab-title { font-size: 12px; font-weight: 700; color: var(--text); }
+.fab-sub { font-size: 10px; color: var(--text-faint); margin-top: 3px; }
+.fab-badge {
+  flex: none;
+  font-size: 10px; font-family: ui-monospace, monospace; font-weight: 700;
+  border-radius: 999px; padding: 3px 9px;
+  border: 1px solid var(--border); color: var(--text-dim);
+}
+.fab-badge.ok { color: #34d399; border-color: rgba(52, 211, 153, 0.45); background: rgba(52, 211, 153, 0.1); }
+.fab-badge.fail { color: #f87171; border-color: rgba(248, 113, 113, 0.5); background: rgba(248, 113, 113, 0.12); }
+.fab-badge.none { color: var(--text-faint); }
+.fab-summary {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px;
+  margin-top: 11px;
+}
+.fab-stat {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(15, 19, 28, 0.85);
+  border: 1px solid var(--border);
+}
+.fab-stat-num { font-size: 12px; font-weight: 700; color: var(--amber-soft); }
+.fab-stat-label { font-size: 9px; color: var(--text-faint); }
+.fab-rows { display: flex; flex-direction: column; gap: 7px; margin-top: 11px; }
+.fab-row {
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(15, 19, 28, 0.85);
+  border: 1px solid var(--border);
+}
+.fab-row.fail { border-color: rgba(248, 113, 113, 0.5); background: rgba(70, 20, 22, 0.35); }
+.fab-row-head { display: flex; align-items: center; gap: 8px; }
+.fab-row-name {
+  flex: 1; font-size: 11px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fab-mini {
+  flex: none;
+  font-size: 9px; font-family: ui-monospace, monospace; font-weight: 700;
+  border-radius: 999px; padding: 2px 7px;
+  border: 1px solid var(--border); color: var(--text-faint);
+}
+.fab-mini.ok { color: #34d399; border-color: rgba(52, 211, 153, 0.4); }
+.fab-mini.fail { color: #f87171; border-color: rgba(248, 113, 113, 0.45); background: rgba(248, 113, 113, 0.12); }
+.fab-row-metrics {
+  display: flex; flex-wrap: wrap; gap: 4px 10px;
+  margin-top: 6px;
+  font-size: 10px; color: var(--text-dim);
+}
+.fab-row-metrics b { font-weight: 700; color: var(--text); }
+.fab-row-metrics .warn { color: var(--amber-soft); }
+.fab-row.fail .fab-row-metrics .island-warn { color: #f87171; font-weight: 700; }
+.fab-note { margin: 10px 0 0; font-size: 9.5px; line-height: 1.6; color: var(--text-faint); }
+
+/* ---------- 2D drawer fab overlay ---------- */
+.fab-line {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(8, 11, 18, 0.7);
+  border: 1px solid var(--border);
+  font-size: 11px; color: var(--text-dim);
+  display: flex; flex-wrap: wrap; gap: 4px 12px;
+}
+.fab-line .warn { color: var(--amber-soft); font-weight: 700; }
+.fab-line .island-warn { color: #f87171; font-weight: 700; }
+.fab-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 10px; color: var(--text-faint); }
+.fab-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.lg { display: inline-block; width: 18px; height: 8px; border-radius: 4px; }
+.lg-bridge { background: #fbbf24; }
+.lg-island { background: transparent; border: 2px dashed #f87171; border-radius: 3px; height: 9px; width: 14px; }
+.fab-island-marker {
+  fill: none;
+  stroke: #f87171;
+  stroke-width: 5;
+  stroke-dasharray: 18 12;
 }
 
 .solo-list { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }

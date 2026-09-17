@@ -100,12 +100,30 @@
           <label class="check-row"><span>EVA 遮光隔离垫条</span><input id="check-vis-spacers" type="checkbox" checked /></label>
           <label class="check-row"><span>LED 发光模组与后盖板</span><input id="check-vis-backplate" type="checkbox" checked /></label>
 
-          <div class="fab-placeholder" aria-disabled="true">
-            <div class="fab-title">制造检查（算法接入中）</div>
-            <div class="fab-desc">孤岛检测、连接桥、切割长度、闭合与自相交检查将由本地几何算法输出，当前版本不提供核验结论。</div>
-            <div class="fab-fields">
-              <span>孤岛</span><span>连接桥</span><span>切割长度</span><span>闭合</span><span>自相交</span>
+          <div id="fab-panel" class="fab-panel">
+            <div class="fab-head">
+              <div>
+                <div class="fab-title">制造检查</div>
+                <div id="fab-meta" class="fab-sub">--</div>
+              </div>
+              <span id="fab-pass-badge" class="fab-badge none">--</span>
             </div>
+            <div class="fab-summary mono">
+              <div class="fab-stat">
+                <span id="fab-total-cut" class="fab-stat-num">--</span>
+                <span class="fab-stat-label">切割总长 mm</span>
+              </div>
+              <div class="fab-stat">
+                <span id="fab-total-bridges" class="fab-stat-num">--</span>
+                <span class="fab-stat-label">连接桥</span>
+              </div>
+              <div class="fab-stat">
+                <span id="fab-min-gap" class="fab-stat-num">--</span>
+                <span class="fab-stat-label">最小缝隙 mm</span>
+              </div>
+            </div>
+            <div id="fab-rows" class="fab-rows"></div>
+            <p id="fab-note" class="fab-note">--</p>
           </div>
         </section>
 
@@ -166,6 +184,11 @@
             <span id="card-layer-depth" class="mono">景深 --</span>
           </div>
           <p id="card-layer-desc" class="hint"></p>
+          <div id="card-fab-line" class="fab-line mono">--</div>
+          <div id="card-fab-legend" class="fab-legend hidden">
+            <span><i class="lg lg-bridge"></i>连接桥</span>
+            <span><i class="lg lg-island"></i>未修复孤岛</span>
+          </div>
         </div>
       </div>
     </div>

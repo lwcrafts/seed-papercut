@@ -370,3 +370,120 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--amber); 
   box-shadow: 0 12px 30px rgba(0,0,0,0.5);
   transition: opacity 0.25s;
 }
+
+/* ---------- 现场重跑（票 16） ---------- */
+.btn-primary { background: rgba(245, 158, 11, 0.16); border-color: rgba(245, 158, 11, 0.55); color: var(--amber-soft); }
+.btn-primary:hover { background: rgba(245, 158, 11, 0.26); }
+.btn-row { display: flex; gap: 8px; margin-top: 12px; }
+
+/* 「演示数据」全局徽标：仅在重跑失败回退后显示 */
+.demo-badge {
+  position: fixed;
+  top: 64px; left: 50%; transform: translateX(-50%);
+  z-index: 60;
+  padding: 6px 16px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #fde68a;
+  background: rgba(120, 53, 15, 0.85);
+  border: 1px solid rgba(251, 191, 36, 0.6);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+/* 模态 */
+.modal-overlay {
+  position: fixed; inset: 0;
+  z-index: 70;
+  background: rgba(4, 6, 10, 0.72);
+  backdrop-filter: blur(4px);
+  display: grid; place-items: center;
+  padding: 20px;
+}
+.modal {
+  width: min(560px, 100%);
+  max-height: min(86vh, 720px);
+  overflow-y: auto;
+  border-radius: 16px;
+  padding: 20px 22px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+.modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.modal-head h2 { margin: 0 0 6px; font-size: 16px; }
+.modal .control-label { display: block; margin-bottom: 6px; font-size: 12px; color: var(--text); font-weight: 600; }
+#rerun-key-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: rgba(8, 10, 15, 0.9);
+  color: var(--text);
+  font-size: 13px;
+  font-family: ui-monospace, monospace;
+}
+#rerun-key-input:focus { outline: none; border-color: var(--amber); }
+.rerun-step { margin-top: 4px; }
+
+.rerun-total { font-size: 11px; color: var(--text-dim); margin-bottom: 10px; }
+#rerun-elapsed { color: var(--amber-soft); font-weight: 700; }
+
+#rerun-stages { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: baseline;
+  column-gap: 10px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  background: rgba(13, 17, 26, 0.75);
+}
+.stage-dot {
+  grid-row: 1;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  align-self: center;
+}
+.stage-name { font-size: 12px; font-weight: 700; color: var(--text-dim); }
+.stage-time { font-size: 10px; color: var(--text-faint); }
+.stage-detail { grid-column: 2 / 4; font-size: 11px; color: var(--sky); margin-top: 4px; overflow-wrap: anywhere; }
+.stage-hint { grid-column: 2 / 4; font-size: 10px; color: var(--text-faint); margin-top: 2px; }
+
+.stage.active { border-color: rgba(245, 158, 11, 0.5); background: rgba(245, 158, 11, 0.07); }
+.stage.active .stage-dot { background: var(--amber); animation: stage-pulse 1.4s ease-in-out infinite; }
+.stage.active .stage-name { color: var(--amber-soft); }
+
+.stage.done .stage-dot { background: #34d399; }
+.stage.done .stage-name { color: #6ee7b7; }
+
+.stage.fail { border-color: rgba(248, 113, 113, 0.55); background: rgba(127, 29, 29, 0.18); }
+.stage.fail .stage-dot { background: #f87171; animation: none; }
+.stage.fail .stage-name { color: #fca5a5; }
+
+@keyframes stage-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+}
+
+.rerun-error-line { margin: 0 0 8px; font-size: 13px; color: #fca5a5; }
+.err-cat {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(248, 113, 113, 0.5);
+  background: rgba(127, 29, 29, 0.35);
+  font-size: 11px;
+  font-weight: 700;
+}
+.rerun-success-line { margin: 0 0 4px; font-size: 13px; color: #6ee7b7; }
+#rerun-total-final { color: var(--amber-soft); font-weight: 700; }
+
+@media (max-width: 640px) {
+  .top-actions { flex-wrap: wrap; }
+}

@@ -29,6 +29,7 @@
           <input id="file-input" type="file" accept=".json" hidden />
         </label>
         <button id="btn-toggle-2d" class="btn">2D 切片查看</button>
+        <button id="btn-rerun" class="btn btn-primary">用你的 Key 现场重跑</button>
         <button id="btn-export-zip" class="btn" disabled title="等待图层数据载入…">导出切割 ZIP</button>
         <button id="btn-screenshot" class="btn">导出渲染图</button>
         <button id="btn-reset-view" class="btn" title="重置相机视角">重置视角</button>
@@ -189,6 +190,90 @@
           <div id="card-fab-legend" class="fab-legend hidden">
             <span><i class="lg lg-bridge"></i>连接桥</span>
             <span><i class="lg lg-island"></i>未修复孤岛</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="demo-badge" class="demo-badge hidden" title="重跑未成功，当前展示的是预置演示数据">演示数据</div>
+
+    <div id="rerun-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="rerun-title">
+      <div class="modal glass">
+        <div class="modal-head">
+          <div>
+            <h2 id="rerun-title">现场重跑全链路</h2>
+            <p class="hint">拆层 → 语义映射 → 矢量化 → 拓扑修复，全部在你的浏览器内直连模型平台完成，不经过任何中间服务器。总时长约 5–7 分钟。</p>
+          </div>
+          <button id="btn-rerun-close" class="btn">关闭</button>
+        </div>
+
+        <div id="rerun-step-key" class="rerun-step">
+          <label class="control-label" for="rerun-key-input">方舟 API Key</label>
+          <input id="rerun-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴你的方舟 API Key" />
+          <p class="hint">Key 仅保存在本页面内存中，仅本次会话使用：不写入本地存储、不进入日志，关闭页面即消失。调用会产生你账号下的模型用量。</p>
+          <div class="btn-row">
+            <button id="btn-rerun-start" class="btn btn-primary">开始重跑</button>
+          </div>
+        </div>
+
+        <div id="rerun-step-progress" class="rerun-step hidden">
+          <div class="rerun-total mono">总耗时 <span id="rerun-elapsed">0:00</span> · 全程约 5–7 分钟，请保持页面在前台</div>
+          <ol id="rerun-stages">
+            <li class="stage" data-stage="decompose">
+              <span class="stage-dot"></span>
+              <span class="stage-name">拆层中</span>
+              <span class="stage-time mono"></span>
+              <div class="stage-detail" hidden></div>
+              <div class="stage-hint">分层引擎处理约 1.5–2 分钟</div>
+            </li>
+            <li class="stage" data-stage="map">
+              <span class="stage-dot"></span>
+              <span class="stage-name">语义映射中</span>
+              <span class="stage-time mono"></span>
+              <div class="stage-detail" hidden></div>
+              <div class="stage-hint">模型推理约 4–9 分钟，耗时明显高于其他段，输出会实时刷新</div>
+            </li>
+            <li class="stage" data-stage="vectorize">
+              <span class="stage-dot"></span>
+              <span class="stage-name">矢量化中</span>
+              <span class="stage-time mono"></span>
+              <div class="stage-detail" hidden></div>
+              <div class="stage-hint">合成与二值化蒙版，通常几十秒</div>
+            </li>
+            <li class="stage" data-stage="topology">
+              <span class="stage-dot"></span>
+              <span class="stage-name">拓扑修复中</span>
+              <span class="stage-time mono"></span>
+              <div class="stage-detail" hidden></div>
+              <div class="stage-hint">孤岛加桥与切割轮廓计算，逐层推进，约 1–3 分钟</div>
+            </li>
+            <li class="stage" data-stage="done">
+              <span class="stage-dot"></span>
+              <span class="stage-name">完成</span>
+              <span class="stage-time mono"></span>
+              <div class="stage-detail" hidden></div>
+            </li>
+          </ol>
+          <div class="btn-row">
+            <button id="btn-rerun-cancel" class="btn">取消</button>
+          </div>
+        </div>
+
+        <div id="rerun-step-error" class="rerun-step hidden">
+          <p class="rerun-error-line">
+            重跑没有继续（<span id="rerun-error-cat" class="err-cat"></span>）：<span id="rerun-error-msg"></span>
+          </p>
+          <p class="hint">可以回退到预置演示数据继续浏览，也可以检查后重试。</p>
+          <div class="btn-row">
+            <button id="btn-rerun-fallback" class="btn btn-primary">回退演示数据</button>
+            <button id="btn-rerun-retry" class="btn">再试一次</button>
+          </div>
+        </div>
+
+        <div id="rerun-step-success" class="rerun-step hidden">
+          <p class="rerun-success-line">重跑完成，已切换到新结果。总耗时 <span id="rerun-total-final" class="mono"></span>。</p>
+          <div class="btn-row">
+            <button id="btn-rerun-finish" class="btn btn-primary">好的</button>
           </div>
         </div>
       </div>

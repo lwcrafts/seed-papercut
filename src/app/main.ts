@@ -7,6 +7,17 @@ import {
   downloadBytes,
   validateLayerSetExport,
 } from '../pipeline/svg-export';
+import { runLiveRerun, type RerunStage } from '../pipeline/live-rerun';
+// evolving prompt/schema 打进 bundle（?raw / JSON 内联），保证离线可用
+import evolvingPrompt from '../../scripts/evolving-prompt-v2.md?raw';
+import evolvingSchema from '../../scripts/evolving-schema-v2.json';
+
+/** 预置场景登记（与 scripts/bake.mjs 的 SCENES 保持一致；先只烘焙/重跑 1 张） */
+const SCENE = {
+  id: 'xiake',
+  image: 'scenes/xiake.jpg',
+  hint: '暖金色纸雕风古风山水插画：侠客策马、古亭、层叠山峦、松树、祥云、水岸草丛。',
+};
 
 const EMPTY_FAB: FabCheck = {
   islands: [],
@@ -98,11 +109,17 @@ const state: {
   active2DLayer: number;
   mode2D: 'solid' | 'laser';
   autoDemo: boolean;
+  /** 烘焙数据（演示回退的基准）；重跑成功后替换 layerSet 但保留这里 */
+  bakedLayerSet: LayerSet | null;
+  /** 重跑失败回退后为 true → 显示全局「演示数据」徽标 */
+  demoMode: boolean;
 } = {
   layerSet: null,
   active2DLayer: 0,
   mode2D: 'solid',
   autoDemo: false,
+  bakedLayerSet: null,
+  demoMode: false,
 };
 
 const container = $<HTMLElement>('webgl-container');
@@ -594,14 +611,238 @@ async function bootstrap(): Promise<void> {
     const res = await fetch(`${import.meta.env.BASE_URL}data/baked/xiake.json`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const set = normalizeLayerSet(await res.json(), 'xiake');
+    state.bakedLayerSet = set;
     loadSet(set);
     // 自测/调试句柄（不影响 UI）
-    (window as unknown as Record<string, unknown>).__seedPapercut = { scene, layerSet: set };
+    (window as unknown as Record<string, unknown>).__seedPapercut = { scene, layerSet: set, rerun: rerunDebug };
   } catch (err) {
     console.error('failed to load baked layer set', err);
     $('data-status-text').textContent = '烘焙图层载入失败';
     showToast('烘焙图层数据载入失败，请用“载入 JSON”选择本地文件');
   }
 }
+
+/* ---------------- 现场重跑（票 16）：异步任务式 UI ---------------- */
+
+type RerunPhase = 'key' | 'running' | 'error' | 'success';
+type StageState = 'pending' | 'active' | 'done' | 'fail';
+const STAGE_ORDER: RerunStage[] = ['decompose', 'map', 'vectorize', 'topology'];
+
+const ERROR_CATEGORY_LABEL: Record<string, string> = {
+  key: 'Key 无效',
+  'rate-limit': '请求过于频繁',
+  timeout: '请求超时',
+  network: '网络受限',
+  moderation: '内容未通过安全检查',
+  api: '接口错误',
+  parse: '结果解析失败',
+  cancelled: '已取消',
+};
+
+const rerunDebug: {
+  events: Array<{ type: string; stage?: string; text?: string; ms?: number }>;
+  ok: boolean | null;
+  demoMode: boolean;
+} = { events: [], ok: null, demoMode: false };
+
+const rerun = {
+  phase: 'key' as RerunPhase,
+  controller: null as AbortController | null,
+  elapsedTimer: 0 as number,
+  t0: 0,
+  stageStart: {} as Record<string, number>,
+  stageStates: {} as Record<string, StageState>,
+};
+
+function fmtElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function fmtDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} 秒`;
+  return `${Math.floor(s / 60)} 分 ${String(s % 60).padStart(2, '0')} 秒`;
+}
+
+function showRerunStep(step: 'key' | 'progress' | 'error' | 'success'): void {
+  $('rerun-step-key').classList.toggle('hidden', step !== 'key');
+  $('rerun-step-progress').classList.toggle('hidden', step !== 'progress');
+  $('rerun-step-error').classList.toggle('hidden', step !== 'error');
+  $('rerun-step-success').classList.toggle('hidden', step !== 'success');
+}
+
+function setStageState(stage: RerunStage | 'done', st: StageState): void {
+  rerun.stageStates[stage] = st;
+  const el = document.querySelector(`#rerun-stages .stage[data-stage="${stage}"]`);
+  if (!el) return;
+  el.classList.toggle('active', st === 'active');
+  el.classList.toggle('done', st === 'done');
+  el.classList.toggle('fail', st === 'fail');
+  const detail = el.querySelector('.stage-detail') as HTMLElement;
+  if (st === 'pending') {
+    detail.hidden = true;
+    detail.textContent = '';
+  }
+}
+
+function setStageDetail(stage: RerunStage | 'done', text: string): void {
+  const el = document.querySelector(`#rerun-stages .stage[data-stage="${stage}"] .stage-detail`) as HTMLElement | null;
+  if (!el) return;
+  el.hidden = false;
+  el.textContent = text;
+}
+
+function setStageTime(stage: RerunStage | 'done', text: string): void {
+  const el = document.querySelector(`#rerun-stages .stage[data-stage="${stage}"] .stage-time`);
+  if (el) el.textContent = text;
+}
+
+function resetRerunStages(): void {
+  for (const stage of [...STAGE_ORDER, 'done' as const]) {
+    setStageState(stage, 'pending');
+    setStageTime(stage, '');
+    const hint = document.querySelector(`#rerun-stages .stage[data-stage="${stage}"] .stage-hint`) as HTMLElement | null;
+    if (hint) hint.hidden = false;
+  }
+}
+
+function openRerunModal(): void {
+  rerun.phase = 'key';
+  showRerunStep('key');
+  $('rerun-modal').classList.remove('hidden');
+  $('rerun-key-input').focus();
+}
+
+function closeRerunModal(): void {
+  // 运行中关闭 = 取消任务
+  rerun.controller?.abort();
+  rerun.controller = null;
+  stopElapsed();
+  // Key 只存内存：关闭模态即清空输入框
+  ($('rerun-key-input') as HTMLInputElement).value = '';
+  $('rerun-modal').classList.add('hidden');
+}
+
+function stopElapsed(): void {
+  if (rerun.elapsedTimer) {
+    window.clearInterval(rerun.elapsedTimer);
+    rerun.elapsedTimer = 0;
+  }
+}
+
+function setDemoBadge(on: boolean): void {
+  state.demoMode = on;
+  rerunDebug.demoMode = on;
+  $('demo-badge').classList.toggle('hidden', !on);
+}
+
+$('btn-rerun').addEventListener('click', openRerunModal);
+$('btn-rerun-close').addEventListener('click', closeRerunModal);
+$('btn-rerun-cancel').addEventListener('click', () => rerun.controller?.abort());
+$('btn-rerun-finish').addEventListener('click', closeRerunModal);
+
+$('btn-rerun-retry').addEventListener('click', () => {
+  rerun.phase = 'key';
+  showRerunStep('key');
+});
+
+$('btn-rerun-fallback').addEventListener('click', () => {
+  if (!state.bakedLayerSet) {
+    showToast('烘焙数据不可用，无法回退');
+    return;
+  }
+  loadSet(state.bakedLayerSet);
+  setDemoBadge(true);
+  showToast('已回退到预置演示数据');
+  closeRerunModal();
+});
+
+$('btn-rerun-start').addEventListener('click', () => {
+  if (rerun.phase === 'running') return;
+  // Key 只从输入框读入内存变量，不写任何持久化存储，不打日志
+  const key = ($('rerun-key-input') as HTMLInputElement).value.trim();
+  if (key.length < 8) {
+    showToast('请先粘贴你的方舟 API Key');
+    $('rerun-key-input').focus();
+    return;
+  }
+  rerun.phase = 'running';
+  rerunDebug.ok = null;
+  rerunDebug.events = [];
+  rerun.stageStart = {};
+  resetRerunStages();
+  showRerunStep('progress');
+  rerun.t0 = Date.now();
+  stopElapsed();
+  rerun.elapsedTimer = window.setInterval(() => {
+    $('rerun-elapsed').textContent = fmtElapsed(Date.now() - rerun.t0);
+  }, 500);
+
+  const controller = new AbortController();
+  rerun.controller = controller;
+
+  const onStage = (stage: RerunStage): void => {
+    rerunDebug.events.push({ type: 'stage', stage });
+    rerun.stageStart[stage] = Date.now();
+    setStageState(stage, 'active');
+  };
+  const onDetail = (stage: RerunStage, text: string): void => {
+    rerunDebug.events.push({ type: 'detail', stage, text });
+    setStageDetail(stage, text);
+  };
+  const onStageDone = (stage: RerunStage, ms: number, summary: string): void => {
+    rerunDebug.events.push({ type: 'done', stage, ms, text: summary });
+    setStageState(stage, 'done');
+    setStageTime(stage, fmtDuration(ms));
+    setStageDetail(stage, summary);
+  };
+  const onError = (category: string, message: string): void => {
+    stopElapsed();
+    rerun.controller = null;
+    const active = STAGE_ORDER.find((s) => rerun.stageStates[s] === 'active');
+    if (active) setStageState(active, 'fail');
+    rerun.phase = 'error';
+    rerunDebug.ok = false;
+    rerunDebug.events.push({ type: 'error', text: category });
+    $('rerun-error-cat').textContent = ERROR_CATEGORY_LABEL[category] ?? category;
+    $('rerun-error-msg').textContent = message;
+    // 取消（而非失败）时没有数据被替换，不需要回退按钮
+    $('btn-rerun-fallback').hidden = category === 'cancelled';
+    showRerunStep('error');
+  };
+  const onSuccess = (layerSet: LayerSet, totalMs: number, timings: Record<RerunStage, number>): void => {
+    stopElapsed();
+    rerun.controller = null;
+    rerun.phase = 'success';
+    rerunDebug.ok = true;
+    rerunDebug.events.push({ type: 'success', ms: totalMs });
+    for (const stage of STAGE_ORDER) {
+      if (rerun.stageStates[stage] !== 'done') {
+        setStageState(stage, 'done');
+        setStageTime(stage, fmtDuration(timings[stage] ?? 0));
+      }
+    }
+    setStageState('done', 'done');
+    setStageTime('done', fmtDuration(totalMs));
+    setStageDetail('done', `五段全部完成，已切换到新结果`);
+    loadSet(layerSet);
+    setDemoBadge(false);
+    $('rerun-total-final').textContent = fmtDuration(totalMs);
+    showRerunStep('success');
+    showToast(`现场重跑完成（${fmtDuration(totalMs)}），已切换到新结果`);
+  };
+
+  void runLiveRerun({
+    apiKey: key,
+    sceneImageUrl: `${import.meta.env.BASE_URL}${SCENE.image}`,
+    sceneId: SCENE.id,
+    sceneHint: SCENE.hint,
+    promptTemplate: evolvingPrompt,
+    schema: evolvingSchema,
+    signal: controller.signal,
+    callbacks: { onStage, onDetail, onStageDone, onError, onSuccess },
+  });
+});
 
 void bootstrap();

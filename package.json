@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "bake": "node scripts/bake.mjs",
     "bake:check": "node scripts/check-masks.mjs",
-    "selftest:browser": "node scripts/selftest-browser.mjs"
+    "selftest:browser": "node scripts/selftest-browser.mjs",
+    "rerun:live": "node scripts/rerun-live-manual.mjs"
   },
   "dependencies": {
     "three": "^0.179.0"

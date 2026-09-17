@@ -1,4 +1,4 @@
-// headless 浏览器自测（issue 13 + 14 + 15）：加载 dist/ 构建产物，验证
+// headless 浏览器自测（issue 13 + 14 + 15 + 16）：加载 dist/ 构建产物，验证
 //   1) xiake.json 加载成功、无 console error / pageerror
 //   2) 6 层挤出网格就位、z 序 L1 靠 LED（paperZ 最小）
 //   3) WebGL（SwiftShader 软渲染）可用且画面非空白
@@ -6,12 +6,16 @@
 //   5) 2D 切片视图：桥位黄色标记数量 == JSON bridgesAdded、缝隙 <2mm 层有 caution
 //   6) SVG/ZIP 导出（票 15）：点击导出 → 拦截下载 → 解析 ZIP（STORE+CRC32 校验）
 //      → 逐层断言 mm 尺寸/viewBox/红色 0.1mm stroke/闭合 path/无 mask/filter/text
+//   7) 现场重跑（票 16）：mock fetch（拆层 b64_json + evolving SSE 流）跑通五段
+//      状态机与结果切换；401 失败分支降级回烘焙数据并显示「演示数据」徽标；
+//      Key 不落盘（localStorage/sessionStorage/cookie 无 Key 字样）
 // 用法：npm run build 后 node scripts/selftest-browser.mjs
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, copyFileSync } from 'node:fs';
 import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { PNG } from 'pngjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(REPO, 'dist');
@@ -292,6 +296,163 @@ for (const layer of baked.layers) {
   if (!readmeText.includes(layer.name)) readmeErrors.push(`missing layer name: ${layer.name}`);
 }
 
+/* ---- 票 16：现场重跑 —— mock fetch（拆层 b64_json + evolving SSE）跑通五段状态机 ---- */
+
+// 小尺寸图层 PNG（64x48，中央 24x18 透明洞 = 镂空），bbox 覆盖 128x96 全画布。
+// 工作分辨率 64x48、阈值 128、去噪点 64px：洞 432px 不被去噪，单连通无孤岛。
+const MOCK_CANVAS_W = 128;
+const MOCK_CANVAS_H = 96;
+function tinyLayerB64() {
+  const w = 64, h = 48;
+  const png = new PNG({ width: w, height: h });
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) * 4;
+      const inHole = x >= 20 && x < 44 && y >= 15 && y < 33;
+      png.data[idx] = png.data[idx + 1] = png.data[idx + 2] = 255;
+      png.data[idx + 3] = inHole ? 0 : 255;
+    }
+  }
+  return PNG.sync.write(png).toString('base64');
+}
+function tinyBaseB64() {
+  const png = new PNG({ width: 8, height: 8 });
+  for (let i = 0; i < 64; i++) {
+    png.data[i * 4] = png.data[i * 4 + 1] = png.data[i * 4 + 2] = 200;
+    png.data[i * 4 + 3] = 255;
+  }
+  return PNG.sync.write(png).toString('base64');
+}
+const mockNames = ['远山剪纸', '古亭剪纸', '松树剪纸', '马匹剪纸', '前景草丛剪纸', '山峦剪纸'];
+const decomposeItems = [
+  { size: `${MOCK_CANVAS_W}x${MOCK_CANVAS_H}`, output_format: 'jpeg', z_index: 0, b64_json: tinyBaseB64() },
+  ...mockNames.map((name, i) => ({
+    size: '64x48',
+    output_format: 'png',
+    z_index: i + 1,
+    b64_json: tinyLayerB64(),
+    bounding_box: { absolute: [0, 0, MOCK_CANVAS_W, MOCK_CANVAS_H], normalized: [0, 0, 999, 999] },
+    name,
+    description: `mock 图层 ${i + 1}`,
+  })),
+];
+const mappingJson = JSON.stringify({
+  layers: mockNames.map((name, i) => ({
+    index: i + 1,
+    name: `测试层${i + 1}`,
+    elements: [{ name, bbox: [0, 0, 999, 999], anchor: 'frame', notes: 'mock' }],
+    mergeNotes: `mock 归并 L${i + 1}`,
+  })),
+});
+// SSE 分 3 段推送 content，另带 usage 行 + [DONE]
+const sseParts = [];
+for (let i = 0; i < 3; i++) {
+  const part = mappingJson.slice((mappingJson.length / 3) * i | 0, (mappingJson.length / 3) * (i + 1) | 0);
+  sseParts.push(`data: ${JSON.stringify({ choices: [{ delta: { content: part } }] })}\n\n`);
+}
+sseParts.push(`data: ${JSON.stringify({ usage: { total_tokens: 4321, completion_tokens: 100 } })}\n\n`);
+sseParts.push('data: [DONE]\n\n');
+
+await page.evaluate(
+  ({ items, parts }) => {
+    const realFetch = window.fetch.bind(window);
+    window.__mockSse = parts;
+    window.__mockMode = 'success';
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+      if (url.includes('images/generations')) {
+        if (window.__mockMode === 'fail401') {
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: { code: 'AuthenticationError', message: 'invalid api key' } }), {
+              status: 401,
+              headers: { 'content-type': 'application/json' },
+            }),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ data: items }), { status: 200, headers: { 'content-type': 'application/json' } }),
+        );
+      }
+      if (url.includes('chat/completions')) {
+        const enc = new TextEncoder();
+        const stream = new ReadableStream({
+          start(c) {
+            for (const p of window.__mockSse) c.enqueue(enc.encode(p));
+            c.close();
+          },
+        });
+        return Promise.resolve(new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+      }
+      return realFetch(input, init);
+    };
+  },
+  { items: decomposeItems, parts: sseParts },
+);
+
+const MOCK_KEY = 'mock-ark-key-0001-自测勿用';
+await page.click('#btn-rerun');
+await page.waitForSelector('#rerun-modal:not(.hidden)', { timeout: 5000 });
+await page.fill('#rerun-key-input', MOCK_KEY);
+await page.click('#btn-rerun-start');
+await page.waitForSelector('#rerun-step-success:not(.hidden)', { timeout: 60000 });
+
+const rerunOk = await page.evaluate(() => {
+  const h = window.__seedPapercut;
+  return {
+    ok: h.rerun.ok,
+    stageSeq: h.rerun.events.filter((e) => e.type === 'stage').map((e) => e.stage),
+    stageRows: [...document.querySelectorAll('#rerun-stages .stage')].map((el) => ({
+      stage: el.dataset.stage,
+      done: el.classList.contains('done'),
+      time: el.querySelector('.stage-time')?.textContent ?? '',
+      detail: el.querySelector('.stage-detail')?.textContent ?? '',
+    })),
+    mapSource: h.layerSet?.pipeline?.mapSource ?? '',
+    layerCount: h.layerSet?.layers.length ?? 0,
+    layerNames: h.layerSet?.layers.map((l) => l.name) ?? [],
+    pathCounts: h.layerSet?.layers.map((l) => l.pathD.length) ?? [],
+    allPass: h.layerSet?.layers.every((l) => l.fabCheck.pass) ?? false,
+    totalTokensDetail: h.rerun.events.some((e) => e.type === 'done' && e.stage === 'map' && (e.text ?? '').includes('4321')),
+    detailSawItems: h.rerun.events.some((e) => e.type === 'detail' && (e.text ?? '').includes('模型返回 7 项')),
+    demoBadgeVisible: !document.getElementById('demo-badge')?.classList.contains('hidden'),
+    exportDisabled: document.getElementById('btn-export-zip')?.disabled ?? true,
+    modalStillOpen: !document.getElementById('rerun-modal')?.classList.contains('hidden'),
+  };
+});
+
+// Key 不落盘：扫 localStorage / sessionStorage / cookie
+const keyLeak = await page.evaluate((k) => {
+  const scan = (store) => Object.keys(store).map((kk) => `${kk}=${store.getItem(kk)}`).join('|');
+  const hay = `${scan(localStorage)}|${scan(sessionStorage)}|${document.cookie}`;
+  return { hay: hay.slice(0, 400), leaked: hay.includes(k) };
+}, MOCK_KEY);
+
+/* ---- 票 16：失败降级分支 —— 401 → 错误类别 → 回退烘焙数据 + 「演示数据」徽标 ---- */
+await page.click('#btn-rerun-finish'); // 关闭成功模态
+await page.evaluate(() => {
+  window.__mockMode = 'fail401';
+});
+await page.click('#btn-rerun');
+await page.waitForSelector('#rerun-modal:not(.hidden)', { timeout: 5000 });
+await page.fill('#rerun-key-input', MOCK_KEY);
+await page.click('#btn-rerun-start');
+await page.waitForSelector('#rerun-step-error:not(.hidden)', { timeout: 15000 });
+const rerunFail = await page.evaluate(() => ({
+  cat: document.getElementById('rerun-error-cat')?.textContent ?? '',
+  msg: document.getElementById('rerun-error-msg')?.textContent ?? '',
+  fallbackVisible: !document.getElementById('btn-rerun-fallback')?.hidden,
+}));
+await page.click('#btn-rerun-fallback');
+await page.waitForTimeout(400);
+const rerunFallback = await page.evaluate(() => ({
+  badge: !document.getElementById('demo-badge')?.classList.contains('hidden'),
+  mapSource: window.__seedPapercut.layerSet?.pipeline?.mapSource ?? '',
+  pxPerMm: window.__seedPapercut.layerSet?.pipeline?.pxPerMm ?? 0,
+  layerCount: window.__seedPapercut.layerSet?.layers.length ?? 0,
+  modalClosed: document.getElementById('rerun-modal')?.classList.contains('hidden') ?? false,
+  keyInputEmpty: document.getElementById('rerun-key-input')?.value === '',
+}));
+
 await browser.close();
 server.close();
 
@@ -341,6 +502,17 @@ const checks = [
     }),
   ),
   { name: 'README: colors/cardstock/kerf/positions/layer names', pass: readmeErrors.length === 0, detail: readmeErrors.join('; ') || 'ok' },
+  // ---- 票 16：现场重跑（mock SSE 全链路） ----
+  { name: 'rerun success: task finished & modal shows success step', pass: rerunOk.ok === true && rerunOk.modalStillOpen, detail: JSON.stringify({ ok: rerunOk.ok, modalStillOpen: rerunOk.modalStillOpen }) },
+  { name: 'rerun: five stages advance in order with per-stage time', pass: JSON.stringify(rerunOk.stageSeq) === JSON.stringify(['decompose', 'map', 'vectorize', 'topology']) && rerunOk.stageRows.every((r) => r.done && r.time.length > 0), detail: JSON.stringify({ seq: rerunOk.stageSeq, rows: rerunOk.stageRows.map((r) => `${r.stage}:${r.time}`) }) },
+  { name: 'rerun: decompose detail reports model item count', pass: rerunOk.detailSawItems, detail: 'expect detail containing 模型返回 7 项' },
+  { name: 'rerun: map stage reports token usage from SSE', pass: rerunOk.totalTokensDetail, detail: 'expect map done summary containing 4321' },
+  { name: 'rerun: new LayerSet replaces preview (same schema, 6 layers, all pass)', pass: rerunOk.mapSource === 'evolving' && rerunOk.layerCount === 6 && rerunOk.pathCounts.length === 6 && rerunOk.pathCounts.every((n) => n > 0) && rerunOk.allPass, detail: JSON.stringify({ mapSource: rerunOk.mapSource, layerCount: rerunOk.layerCount, pathCounts: rerunOk.pathCounts, allPass: rerunOk.allPass }) },
+  { name: 'rerun: success does NOT show demo badge & export stays enabled', pass: !rerunOk.demoBadgeVisible && !rerunOk.exportDisabled, detail: JSON.stringify(rerunOk) },
+  { name: 'rerun: API key not in localStorage/sessionStorage/cookie', pass: !keyLeak.leaked, detail: keyLeak.hay },
+  { name: 'rerun: API key not in console/page error logs', pass: !consoleErrors.join('|').includes(MOCK_KEY) && !pageErrors.join('|').includes(MOCK_KEY), detail: 'key absent from captured logs' },
+  { name: 'rerun 401: error step shows category + fallback button', pass: rerunFail.cat.includes('Key') && rerunFail.msg.length > 0 && rerunFail.fallbackVisible, detail: JSON.stringify(rerunFail) },
+  { name: 'rerun fallback: demo badge shown, baked data restored, key cleared', pass: rerunFallback.badge && rerunFallback.mapSource === 'evolving' && Math.abs(rerunFallback.pxPerMm - baked.pipeline.pxPerMm) < 1e-9 && rerunFallback.layerCount === 6 && rerunFallback.modalClosed && rerunFallback.keyInputEmpty, detail: JSON.stringify(rerunFallback) },
 ];
 for (const c of checks) console.log(`${c.pass ? 'PASS' : 'FAIL'} ${c.name}${c.pass ? '' : ' :: ' + JSON.stringify(c.detail)}`);
 writeFileSync(

@@ -58,7 +58,9 @@ export function classifyError(err: unknown): { category: ErrorCategory; message:
     return { category: 'timeout', message: '请求超时，网络或模型响应过慢' };
   }
   if (err instanceof TypeError) {
-    return { category: 'network', message: '网络请求被浏览器拦截或连接失败（可能是网络不通或 CORS 限制）' };
+    // 实测（票 18）：ark 的 401/4xx 错误响应不带 ACAO，浏览器会拦截并抛 TypeError，
+    // 因此「Key 填错」也会走到这里——提示语需把这种情况包含进去。
+    return { category: 'network', message: '网络请求被浏览器拦截或连接失败（网络不通、CORS 限制，或 Key 无效时浏览器读不到错误详情）' };
   }
   return { category: 'api', message: err instanceof Error ? err.message : String(err) };
 }

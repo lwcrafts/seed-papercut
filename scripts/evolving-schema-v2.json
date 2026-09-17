@@ -1,0 +1,87 @@
+{
+  "name": "papercut_depth_six_layers_v2",
+  "strict": true,
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "layers": {
+        "type": "array",
+        "minItems": 6,
+        "maxItems": 6,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "index": {
+              "type": "integer",
+              "enum": [1, 2, 3, 4, 5, 6],
+              "description": "1=最远/靠背板LED，6=最近/靠观者玻璃"
+            },
+            "name": {
+              "type": "string",
+              "description": "本层简短中文名称（场景化，4-10字）"
+            },
+            "elements": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "元素简短中文名，合并元素用集合名，如『右侧层叠山峦』而非逐峰命名"
+                  },
+                  "bbox": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 999
+                    },
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "description": "[x1,y1,x2,y2] 归一化整数 0-999，紧贴元素外接矩形"
+                  },
+                  "anchor": {
+                    "type": "string",
+                    "enum": ["frame", "ground", "free"],
+                    "description": "frame=连外框/满版；ground=落地或落地平线；free=悬空需加桥"
+                  },
+                  "notes": {
+                    "type": "string",
+                    "description": "一句话：该元素的雕刻处理提示（镂空密度、是否需要加桥、与邻层遮挡关系）；无则填空字符串"
+                  }
+                },
+                "required": ["name", "bbox", "anchor", "notes"]
+              }
+            },
+            "mergeNotes": {
+              "type": "string",
+              "description": "本层合并/取舍说明：哪些细节被并入了哪个父元素、本层为空的原因（为空时必填原因）"
+            }
+          },
+          "required": ["index", "name", "elements", "mergeNotes"]
+        }
+      },
+      "qualityCheck": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "occlusionErrors": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "可能导致纸雕穿帮的跨层遮挡/穿插问题，每条含涉及元素名；没有则空数组"
+          },
+          "unsureElements": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "层归属或边界不确定的元素：『元素名 — 不确定原因 / 候选层』；没有则空数组"
+          }
+        },
+        "required": ["occlusionErrors", "unsureElements"]
+      }
+    },
+    "required": ["layers", "qualityCheck"]
+  }
+}

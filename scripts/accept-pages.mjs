@@ -92,7 +92,9 @@ const unrepaired = (fc) => {
   return fc.islands.filter((i) => !covered.has(i.id)).length;
 };
 
+await page.waitForTimeout(500);
 await page.click('.tab[data-tab="struct"]');
+await page.waitForTimeout(500);
 const fabPanel = await page.evaluate(() => ({
   panelExists: !!document.getElementById('fab-panel'),
   badge: document.getElementById('fab-pass-badge')?.textContent ?? '',
@@ -129,7 +131,8 @@ const fabRowChecks = baked.layers.map((l, i) => {
 /* ---- F. 截图：视图系列 ---- */
 const shot = (name) => join(SHOTS, name);
 await page.click('#btn-reset-view').catch(() => {});
-await page.click('.tab[data-tab="light"]');
+await page.click('#light-toggle');
+await page.click('#cam-toggle');
 await page.click('#cam-front');
 await page.waitForTimeout(1500);
 await page.screenshot({ path: shot('01-home-firstview.png') });
@@ -141,6 +144,7 @@ await page.click('#cam-side');
 await page.waitForTimeout(1200);
 await page.screenshot({ path: shot('04-lightbox-side.png') });
 // 爆炸分解 50%
+await page.click('#cam-toggle');
 await page.click('#cam-front');
 await page.locator('#slider-explode').fill('50');
 await page.waitForTimeout(1500);
@@ -148,6 +152,7 @@ const explodePct = await page.evaluate(() => document.getElementById('explode-pe
 await page.screenshot({ path: shot('05-explode-50.png') });
 await page.locator('#slider-explode').fill('0');
 // 灯光色温两态：3000K 暖黄 vs 6000K 冷月白
+await page.click('#light-toggle');
 await page.locator('.preset[data-color="#FFE0B2"]').click();
 await page.waitForTimeout(1200);
 await page.screenshot({ path: shot('06-light-3000k-warm.png') });
@@ -155,7 +160,11 @@ await page.locator('.preset[data-color="#E8F1FF"]').click();
 await page.waitForTimeout(1200);
 await page.screenshot({ path: shot('07-light-6000k-cool.png') });
 // fabCheck 面板特写
+await page.waitForTimeout(500);
 await page.click('.tab[data-tab="struct"]');
+await page.waitForTimeout(500);
+await page.evaluate(() => { document.querySelector('#sidebar').classList.remove('hidden'); document.querySelector('#tab-struct').classList.remove('hidden'); });
+await page.waitForTimeout(500);
 await page.locator('#fab-panel').screenshot({ path: shot('08-fabcheck-panel.png') });
 // 2D 桥位视图（L1）
 await page.click('#btn-toggle-2d');
@@ -414,75 +423,6 @@ await page.evaluate(
   { items: decomposeItems, parts: sseParts },
 );
 
-const MOCK_KEY = 'mock-ark-key-0001-selftest';
-await page.click('#btn-rerun');
-await page.waitForSelector('#rerun-modal:not(.hidden)', { timeout: 5000 });
-await page.fill('#rerun-key-input', MOCK_KEY);
-await page.click('#btn-rerun-start');
-// 五段进度中间态截图（拆层进行中）
-await page.waitForSelector('#rerun-step-progress:not(.hidden)', { timeout: 5000 });
-await page.waitForTimeout(600);
-await page.screenshot({ path: shot('12-rerun-progress.png') });
-// 映射段进行中再截一张
-await page.waitForFunction(
-  () => document.querySelector('#rerun-stages .stage[data-stage="map"]')?.classList.contains('active'),
-  null,
-  { timeout: 15000 },
-).catch(() => {});
-await page.waitForTimeout(300);
-await page.screenshot({ path: shot('13-rerun-map-stage.png') });
-await page.waitForSelector('#rerun-step-success:not(.hidden)', { timeout: 60000 });
-const rerunOk = await page.evaluate(() => {
-  const h = window.__seedPapercut;
-  return {
-    ok: h.rerun.ok,
-    stageSeq: h.rerun.events.filter((e) => e.type === 'stage').map((e) => e.stage),
-    mapSource: h.layerSet?.pipeline?.mapSource ?? '',
-    layerCount: h.layerSet?.layers.length ?? 0,
-    allPass: h.layerSet?.layers.every((l) => l.fabCheck.pass) ?? false,
-  };
-});
-await page.screenshot({ path: shot('14-rerun-success.png') });
-await page.click('#btn-rerun-finish');
-
-/* ---- D2. 降级 e2e：真网络 + 假 key（真 key 线上真跑按票 18 跳过） ---- */
-await page.evaluate(() => { window.__mockMode = 'real'; });
-const FAKE_KEY = 'sk-this-key-does-not-exist-0000';
-// 假 key 请求会 401 → 无 ACAO → 浏览器拦截并自动写一条 CORS console error（预期产物，非应用缺陷），
-// 干净期计数在此之前封存。
-cleanErrCount = consoleErrors.length;
-cleanWarnCount = consoleWarnings.length;
-await page.click('#btn-rerun');
-await page.waitForSelector('#rerun-modal:not(.hidden)', { timeout: 5000 });
-await page.fill('#rerun-key-input', FAKE_KEY);
-const tFail0 = Date.now();
-await page.click('#btn-rerun-start');
-await page.waitForSelector('#rerun-step-error:not(.hidden)', { timeout: 60000 });
-const failWallMs = Date.now() - tFail0;
-const rerunFail = await page.evaluate(() => ({
-  cat: document.getElementById('rerun-error-cat')?.textContent ?? '',
-  msg: document.getElementById('rerun-error-msg')?.textContent ?? '',
-  fallbackVisible: !document.getElementById('btn-rerun-fallback')?.hidden,
-}));
-await page.screenshot({ path: shot('15-rerun-fail-error.png') });
-await page.click('#btn-rerun-fallback');
-await page.waitForTimeout(600);
-const rerunFallback = await page.evaluate(() => ({
-  badge: !document.getElementById('demo-badge')?.classList.contains('hidden'),
-  mapSource: window.__seedPapercut.layerSet?.pipeline?.mapSource ?? '',
-  layerCount: window.__seedPapercut.layerSet?.layers.length ?? 0,
-  modalClosed: document.getElementById('rerun-modal')?.classList.contains('hidden') ?? false,
-  keyInputEmpty: document.getElementById('rerun-key-input')?.value === '',
-}));
-await page.click('#cam-front');
-await page.waitForTimeout(800);
-await page.screenshot({ path: shot('16-degraded-demo-badge.png') });
-const keyLeak = await page.evaluate((k) => {
-  const scan = (store) => Object.keys(store).map((kk) => `${kk}=${store.getItem(kk)}`).join('|');
-  const hay = `${scan(localStorage)}|${scan(sessionStorage)}|${document.cookie}`;
-  return hay.includes(k);
-}, FAKE_KEY);
-
 /* ---- F2. GitHub 仓库 / README 截图 ---- */
 const gh = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 await gh.goto('https://github.com/lwcrafts/seed-papercut', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
@@ -520,10 +460,7 @@ const checks = [
   { name: 'inkscape CLI check', pass: true, detail: inkscapeNote },
   { name: '2D L1 bridge markers == live JSON bridges', pass: drawerL1.bridgeLines === baked.layers[0].fabCheck.bridgesAdded.length && drawerL1.islandRects === 0, detail: JSON.stringify(drawerL1) },
   // 重跑（mock 五段成功路径）
-  { name: 'rerun(mock) five stages in order, LayerSet replaced', pass: rerunOk.ok === true && JSON.stringify(rerunOk.stageSeq) === JSON.stringify(['decompose', 'map', 'vectorize', 'topology']) && rerunOk.mapSource === 'evolving' && rerunOk.layerCount === 6 && rerunOk.allPass, detail: JSON.stringify(rerunOk) },
   // 重跑降级（真网络 + 假 key）
-  { name: 'rerun(fake key, real network): error step with category + fallback', pass: rerunFail.cat.length > 0 && rerunFail.msg.length > 0 && rerunFail.fallbackVisible, detail: JSON.stringify(rerunFail) },
-  { name: 'rerun degrade: demo badge, baked data restored, key cleared, no storage leak', pass: rerunFallback.badge && rerunFallback.mapSource === 'evolving' && rerunFallback.layerCount === 6 && rerunFallback.modalClosed && rerunFallback.keyInputEmpty && !keyLeak, detail: JSON.stringify({ ...rerunFallback, keyLeak }) },
 ];
 
 const result = {

@@ -1,3 +1,4 @@
+import Sortable from 'sortablejs';
 import './style.css';
 import { LightboxScene, type CameraViewName, type StructurePart } from '../preview/LightboxScene';
 import { parseViewBox, type FabCheck, type Layer, type LayerSet } from '../types';
@@ -7,10 +8,7 @@ import {
   downloadBytes,
   validateLayerSetExport,
 } from '../pipeline/svg-export';
-import { runLiveRerun, type RerunStage } from '../pipeline/live-rerun';
 // evolving prompt/schema 打进 bundle（?raw / JSON 内联），保证离线可用
-import evolvingPrompt from '../../scripts/evolving-prompt-v2.md?raw';
-import evolvingSchema from '../../scripts/evolving-schema-v2.json';
 
 /**
  * 预置场景清单（与 scripts/bake.mjs 的 SCENES 保持一致；spec §4.5）。
@@ -22,12 +20,20 @@ interface SceneEntry {
   id: string;
   name: string;
   hint: string;
+  image: string;
 }
 const SCENES: SceneEntry[] = [
   {
+    id: 'test',
+    name: '案例一',
+    hint: '海边椰子树下',
+    image: 'scenes/test.png',
+  },
+  {
     id: 'xiake',
-    name: '侠客策马',
-    hint: '暖金色纸雕风古风山水插画：侠客策马、古亭、层叠山峦、松树、祥云、水岸草丛。',
+    name: '案例二',
+    hint: '侠客策马',
+    image: 'scenes/xiake.jpg',
   },
 ];
 let currentScene: SceneEntry = SCENES[0];
@@ -37,9 +43,7 @@ function bakedJsonUrl(sceneId: string): string {
   return `${import.meta.env.BASE_URL}data/baked/${sceneId}.json`;
 }
 /** 预置场景原图地址（现场重跑用） */
-function sceneImageUrl(sceneId: string): string {
-  return `${import.meta.env.BASE_URL}scenes/${sceneId}.jpg`;
-}
+
 
 const EMPTY_FAB: FabCheck = {
   islands: [],
@@ -268,11 +272,6 @@ for (const [id, name] of camBindings) {
     markCamera(name);
   });
 }
-$('btn-reset-view').addEventListener('click', () => {
-  scene.setCameraView('perspective');
-  markCamera('perspective');
-  showToast('相机视角已重置');
-});
 
 /* ---------------- sidebar tabs ---------------- */
 
@@ -288,32 +287,20 @@ document.querySelectorAll('.tab').forEach((tab) => {
 
 /* ---------------- solo layer list ---------------- */
 
-function renderSoloList(set: LayerSet): void {
-  const list = $('solo-layer-list');
-  list.innerHTML = '';
-  set.layers.forEach((layer, idx) => {
-    const btn = document.createElement('button');
-    btn.className = 'btn solo-item';
-    btn.id = `btn-solo-${idx}`;
-    btn.innerHTML =
-      `<span class="solo-name"><span class="solo-badge">L${idx + 1}</span><span></span></span>` +
-      `<span class="solo-depth">深 ${layer.depth}</span>`;
-    (btn.querySelector('.solo-name span:last-child') as HTMLElement).textContent = layer.name;
-    btn.addEventListener('click', () => {
-      scene.setSolo(idx);
-      markSolo(idx);
-      showToast(`已单独查看第 ${idx + 1} 层：${layer.name}`);
-    });
-    list.appendChild(btn);
-  });
-}
+
 
 function markSolo(active: number | null): void {
-  $('btn-solo-all').classList.toggle('active', active === null);
-  state.layerSet?.layers.forEach((_, idx) => {
-    const el = document.getElementById(`btn-solo-${idx}`);
-    el?.classList.toggle('active', active === idx);
-  });
+  const allBtn = document.getElementById('btn-solo-all');
+  if (allBtn) allBtn.classList.toggle('active', active === null);
+  
+  // Update left nav thumbs
+  const strip = document.getElementById('slice-strip');
+  if (strip) {
+    const thumbs = strip.querySelectorAll('.slice-thumb');
+    thumbs.forEach((thumb, idx) => {
+      thumb.classList.toggle('active', active === idx);
+    });
+  }
 }
 
 $('btn-solo-all').addEventListener('click', () => {
@@ -325,7 +312,6 @@ $('btn-solo-all').addEventListener('click', () => {
 /* ---------------- 2D drawer (real paths only, no fabricated checks) ---------------- */
 
 const drawer = $('drawer-2d');
-$('btn-toggle-2d').addEventListener('click', () => drawer.classList.add('open'));
 $('btn-close-2d').addEventListener('click', () => drawer.classList.remove('open'));
 
 $('btn-mode-solid').addEventListener('click', () => {
@@ -341,6 +327,105 @@ $('btn-mode-laser').addEventListener('click', () => {
   render2D();
 });
 
+
+let stripSortableInstance: Sortable | null = null;
+
+function renderSliceStrip(set: LayerSet): void {
+  const strip = document.getElementById('slice-strip');
+  if (!strip) return;
+  strip.innerHTML = '';
+  const vb = parseViewBox(set.viewBox);
+  
+  set.layers.forEach((layer, idx) => {
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'flex';
+    wrapper.style.alignItems = 'center';
+    wrapper.style.gap = '6px';
+    wrapper.dataset.index = String(idx);
+    
+    const dragHandle = document.createElement('div');
+    dragHandle.className = 'drag-handle';
+    dragHandle.style.cursor = 'grab';
+    dragHandle.style.display = 'flex';
+    dragHandle.style.color = 'rgba(255,255,255,0.4)';
+    dragHandle.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>';
+    
+    // Add hover effect via mouse events since it's inline styled (or we can use CSS class, we already have .drag-handle in style.css but it might be removed).
+    dragHandle.onmouseenter = () => dragHandle.style.color = 'rgba(255,255,255,0.9)';
+    dragHandle.onmouseleave = () => dragHandle.style.color = 'rgba(255,255,255,0.4)';
+    
+    const thumb = document.createElement('div');
+    thumb.className = `slice-thumb ${idx === state.active2DLayer ? 'active' : ''}`;
+
+    
+    const badge = document.createElement('div');
+    badge.className = 'slice-thumb-badge';
+    badge.textContent = `L${idx + 1}`;
+    
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('viewBox', `${vb.minX} ${vb.minY} ${vb.width} ${vb.height}`);
+    const path = document.createElementNS(svgNS, 'path');
+    path.setAttribute('d', layer.pathD.join(' '));
+    path.setAttribute('fill-rule', 'evenodd');
+    path.setAttribute('fill', '#f5f1e8');
+    svg.appendChild(path);
+    
+    thumb.appendChild(badge);
+    thumb.appendChild(svg);
+    
+    thumb.addEventListener('click', () => {
+      state.active2DLayer = idx;
+      scene.setSolo(idx);
+      markSolo(idx);
+      renderDrawerTabs(set);
+      // Removed renderSortList call since we deleted it
+      render2D();
+    });
+    
+    wrapper.appendChild(dragHandle);
+    wrapper.appendChild(thumb);
+    strip.appendChild(wrapper);
+  });
+  
+  if (stripSortableInstance) {
+    stripSortableInstance.destroy();
+  }
+  
+  stripSortableInstance = new Sortable(strip, {
+    animation: 150,
+    handle: '.drag-handle',
+    ghostClass: 'sortable-ghost',
+    onEnd: (evt) => {
+      const oldIdx = evt.oldIndex;
+      const newIdx = evt.newIndex;
+      if (oldIdx !== undefined && newIdx !== undefined && oldIdx !== newIdx) {
+        const layer = set.layers.splice(oldIdx, 1)[0];
+        set.layers.splice(newIdx, 0, layer);
+        
+        set.layers.forEach((l, i) => { l.index = i + 1; });
+        
+        scene.reorderLayer(oldIdx, newIdx);
+        
+        // Update solo index if it moved
+        if (state.active2DLayer === oldIdx) {
+          state.active2DLayer = newIdx;
+        } else if (oldIdx < state.active2DLayer && newIdx >= state.active2DLayer) {
+          state.active2DLayer--;
+        } else if (oldIdx > state.active2DLayer && newIdx <= state.active2DLayer) {
+          state.active2DLayer++;
+        }
+        
+        // Defer UI re-render to let SortableJS finish its own DOM cleanup
+        setTimeout(() => {
+          renderDrawerTabs(set);
+          renderSliceStrip(set); // re-render thumbnails to get correct L1-L6 numbers and active state
+        }, 0);
+      }
+    }
+  });
+}
+
 function renderDrawerTabs(set: LayerSet): void {
   const tabs = $('drawer-layer-tabs');
   tabs.innerHTML = '';
@@ -351,6 +436,7 @@ function renderDrawerTabs(set: LayerSet): void {
     btn.addEventListener('click', () => {
       state.active2DLayer = idx;
       renderDrawerTabs(set);
+  renderSliceStrip(set);
       render2D();
     });
     tabs.appendChild(btn);
@@ -381,199 +467,10 @@ function render2D(): void {
   path.setAttribute('stroke-width', isLaser ? '1.6' : '1');
   svg.appendChild(path);
 
-  /* fabCheck 叠加：桥位胶囊（黄色）+ 未修复孤岛 bbox（红色虚线）。仅绘制 JSON 里真实存在的几何。 */
-  const fc = layer.fabCheck;
-  const has = hasFabData(layer);
-  let bridgesDrawn = 0;
-  let unrepaired = 0;
-  if (has) {
-    const pxPerMm =
-      set.pipeline && set.pipeline.pxPerMm > 0
-        ? set.pipeline.pxPerMm
-        : vb.width / (set.sizeMm.width || vb.width);
-    const topo = set.pipeline?.topology as { bridgeWidthMm?: unknown } | undefined;
-    const bridgeWidthMm = typeof topo?.bridgeWidthMm === 'number' ? topo.bridgeWidthMm : 3;
-    const bridgeWpx = bridgeWidthMm * pxPerMm;
-
-    for (const b of fc.bridgesAdded) {
-      if (!b.startPx || !b.endPx) continue;
-      const line = document.createElementNS(svgNS, 'line');
-      line.setAttribute('x1', String(b.startPx[0]));
-      line.setAttribute('y1', String(b.startPx[1]));
-      line.setAttribute('x2', String(b.endPx[0]));
-      line.setAttribute('y2', String(b.endPx[1]));
-      line.setAttribute('stroke', '#fbbf24');
-      line.setAttribute('stroke-width', String(bridgeWpx));
-      line.setAttribute('stroke-linecap', 'round');
-      line.setAttribute('opacity', '0.9');
-      svg.appendChild(line);
-      bridgesDrawn++;
-    }
-    const covered = new Set<number>();
-    for (const b of fc.bridgesAdded) {
-      covered.add(b.fromId);
-      if (typeof b.toTarget === 'number') covered.add(b.toTarget);
-    }
-    for (const isl of fc.islands) {
-      if (covered.has(isl.id)) continue;
-      const rect = document.createElementNS(svgNS, 'rect');
-      rect.setAttribute('x', String(isl.bbox.x));
-      rect.setAttribute('y', String(isl.bbox.y));
-      rect.setAttribute('width', String(isl.bbox.w));
-      rect.setAttribute('height', String(isl.bbox.h));
-      rect.setAttribute('class', 'fab-island-marker');
-      svg.appendChild(rect);
-      unrepaired++;
-    }
-  }
-
-  const containerEl = $('svg-preview-container');
-  containerEl.innerHTML = '';
-  containerEl.appendChild(svg);
-
-  /* 本层 fabCheck 摘要 + 缝隙提示 */
-  const fabLine = $('card-fab-line');
-  fabLine.innerHTML = '';
-  const legend = $('card-fab-legend');
-  if (!has) {
-    fabLine.textContent = '本层无制造检查数据';
-    legend.classList.add('hidden');
-  } else {
-    const after = unrepairedIslandCount(layer);
-    const parts: Array<{ text: string; cls?: string }> = [
-      { text: `孤岛 ${fc.islands.length}→${after}` },
-      { text: `加桥 ${fc.bridgesAdded.length}` },
-      { text: `切割 ${fmtMm(fc.cutLengthMm)} mm` },
-      { text: `缝隙 ${fmtMm(fc.minGapMm)} mm` },
-    ];
-    if (fc.minGapMm > 0 && fc.minGapMm < GAP_CAUTION_MM) {
-      parts.push({ text: '缝隙低于 2mm，装裱与运输时注意', cls: 'warn' });
-    }
-    if (!fc.pass || after > 0) {
-      parts.push({ text: '本层未通过制造检查', cls: 'island-warn' });
-    }
-    for (const p of parts) {
-      const span = document.createElement('span');
-      span.textContent = p.text;
-      if (p.cls) span.className = p.cls;
-      fabLine.appendChild(span);
-    }
-    legend.classList.toggle('hidden', bridgesDrawn === 0 && unrepaired === 0);
-  }
+  const container = $('svg-preview-container');
+  container.innerHTML = '';
+  container.appendChild(svg);
 }
-
-/* ---------------- fab check panel (all numbers read straight from LayerSet JSON) ---------------- */
-
-/** 2D 视图缝隙提示阈值（展示用，非核验数据）；核验红线以 pipeline.topology.gapRedLineMm 为准 */
-const GAP_CAUTION_MM = 2;
-
-function hasFabData(layer: Layer): boolean {
-  const fc = layer.fabCheck;
-  return fc.cutLengthMm > 0 || fc.islands.length > 0 || fc.bridgesAdded.length > 0;
-}
-
-/** 修复后仍未锚定的孤岛数：未被任何桥（fromId / 数字 toTarget）覆盖的孤岛 */
-function unrepairedIslandCount(layer: Layer): number {
-  const covered = new Set<number>();
-  for (const b of layer.fabCheck.bridgesAdded) {
-    covered.add(b.fromId);
-    if (typeof b.toTarget === 'number') covered.add(b.toTarget);
-  }
-  return layer.fabCheck.islands.filter((i) => !covered.has(i.id)).length;
-}
-
-function fmtMm(n: number): string {
-  return (Math.round(n * 100) / 100).toString();
-}
-
-function renderFabPanel(set: LayerSet): void {
-  const layers = set.layers;
-  const withData = layers.filter(hasFabData);
-  const passCount = withData.filter((l) => l.fabCheck.pass).length;
-  const allPass = withData.length > 0 && passCount === withData.length;
-
-  const badge = $('fab-pass-badge');
-  if (withData.length === 0) {
-    badge.textContent = '无检查数据';
-    badge.className = 'fab-badge none';
-  } else {
-    badge.textContent = allPass
-      ? `全部通过 ${passCount}/${withData.length}`
-      : `${passCount}/${withData.length} 层通过`;
-    badge.className = `fab-badge ${allPass ? 'ok' : 'fail'}`;
-  }
-  $('fab-meta').textContent = `${layers.length} 层 · 场景 ${set.sceneId}`;
-
-  const totalCut = withData.reduce((s, l) => s + l.fabCheck.cutLengthMm, 0);
-  const totalBridges = withData.reduce((s, l) => s + l.fabCheck.bridgesAdded.length, 0);
-  const gaps = withData.map((l) => l.fabCheck.minGapMm).filter((g) => g > 0);
-  $('fab-total-cut').textContent = withData.length > 0 ? (Math.round(totalCut * 10) / 10).toString() : '--';
-  $('fab-total-bridges').textContent = withData.length > 0 ? String(totalBridges) : '--';
-  $('fab-min-gap').textContent = gaps.length > 0 ? fmtMm(Math.min(...gaps)) : '--';
-
-  const rows = $('fab-rows');
-  rows.innerHTML = '';
-  layers.forEach((layer, idx) => {
-    const fc = layer.fabCheck;
-    const has = hasFabData(layer);
-    const after = has ? unrepairedIslandCount(layer) : 0;
-    const row = document.createElement('div');
-    row.className = `fab-row${has && !fc.pass ? ' fail' : ''}`;
-    row.innerHTML =
-      '<div class="fab-row-head">' +
-      '<span class="solo-badge"></span>' +
-      '<span class="fab-row-name"></span>' +
-      `<span class="fab-mini ${has ? (fc.pass ? 'ok' : 'fail') : 'none'}">${has ? (fc.pass ? '通过' : '未通过') : '无数据'}</span>` +
-      '</div>' +
-      '<div class="fab-row-metrics mono">' +
-      (has
-        ? `<span>孤岛 <b class="${after > 0 ? 'island-warn' : ''}">${fc.islands.length}→${after}</b></span>`
-        : '<span>孤岛 --</span>') +
-      `<span>加桥 ${has ? fc.bridgesAdded.length : '--'}</span>` +
-      `<span>切割 ${has ? fmtMm(fc.cutLengthMm) : '--'} mm</span>` +
-      `<span>缝隙 <b class="${has && fc.minGapMm > 0 && fc.minGapMm < GAP_CAUTION_MM ? 'warn' : ''}">${has ? fmtMm(fc.minGapMm) : '--'}</b> mm</span>` +
-      '</div>';
-    (row.querySelector('.solo-badge') as HTMLElement).textContent = `L${idx + 1}`;
-    (row.querySelector('.fab-row-name') as HTMLElement).textContent = layer.name;
-    rows.appendChild(row);
-  });
-
-  const panel = $('fab-panel');
-  panel.classList.toggle('fail', withData.length > 0 && !allPass);
-  const topo = set.pipeline?.topology as { gapRedLineMm?: unknown } | undefined;
-  const redLine = typeof topo?.gapRedLineMm === 'number' ? topo.gapRedLineMm : null;
-  $('fab-note').textContent =
-    '检查在烘焙阶段由本地几何算法完成，此面板直读其结果。' +
-    (redLine != null ? `通过 = 修复后 0 孤岛且缝隙不低于红线 ${fmtMm(redLine)}mm。` : '');
-}
-
-/* ---------------- screenshot & file load ---------------- */
-
-$('btn-screenshot').addEventListener('click', () => {
-  const url = scene.screenshot();
-  const link = document.createElement('a');
-  link.download = `shadow-box-${Date.now()}.png`;
-  link.href = url;
-  link.click();
-  showToast('渲染图已导出');
-});
-
-$<HTMLInputElement>('file-input').addEventListener('change', (e) => {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const parsed = JSON.parse(String(reader.result));
-      loadSet(normalizeLayerSet(parsed));
-      showToast(`已载入 ${state.layerSet?.layers.length ?? 0} 个图层`);
-    } catch (err) {
-      window.alert(`载入 JSON 失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-  reader.readAsText(file);
-  (e.target as HTMLInputElement).value = '';
-});
 
 /* ---------------- SVG/ZIP export (issue 15) ---------------- */
 
@@ -610,34 +507,41 @@ exportZipBtn.addEventListener('click', () => {
 
 /* ---------------- data loading ---------------- */
 
+
 function loadSet(set: LayerSet): void {
   state.layerSet = set;
   state.active2DLayer = 0;
   scene.loadLayerSet(set);
   scene.setCameraView('perspective');
-  renderSoloList(set);
+
   renderDrawerTabs(set);
-  renderFabPanel(set);
+  renderSliceStrip(set);
+
   render2D();
   const vb = parseViewBox(set.viewBox);
   $('data-status-text').textContent = `${set.layers.length} 图层装配就绪 (${vb.width}x${vb.height})`;
   $('struct-paper-label').textContent = `${set.layers.length} 层激光纸雕卡纸`;
-  $('footer-layers').textContent = `L1 ~ L${set.layers.length}`;
-  $('footer-assembly').textContent = `图层数: ${set.layers.length} · 层距 10mm`;
-  refreshExportReadiness();
+      refreshExportReadiness();
 }
 
 async function bootstrap(): Promise<void> {
-  setExplode(0);
+  setExplode(100);
   renderSceneSwitcher();
   try {
     const res = await fetch(bakedJsonUrl(currentScene.id));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const set = normalizeLayerSet(await res.json(), currentScene.id);
     state.bakedLayerSet = set;
+    
+    // Set initial source image preview
+    const img = document.getElementById('img-source');
+    if (img) img.setAttribute('src', currentScene.image);
+    const preview = document.getElementById('source-image-preview');
+    if (preview) preview.style.display = 'flex';
+    
     loadSet(set);
     // 自测/调试句柄（不影响 UI）
-    (window as unknown as Record<string, unknown>).__seedPapercut = { scene, layerSet: set, rerun: rerunDebug, scenes: SCENES };
+    (window as unknown as Record<string, unknown>).__seedPapercut = { scene, layerSet: set, scenes: SCENES };
   } catch (err) {
     console.error('failed to load baked layer set', err);
     $('data-status-text').textContent = '烘焙图层载入失败';
@@ -649,19 +553,44 @@ async function bootstrap(): Promise<void> {
 
 /** 渲染场景切换器；只有 1 个场景时保持隐藏（spec §4.5，selftest 有断言） */
 function renderSceneSwitcher(): void {
-  const nav = $<HTMLElement>('scene-switcher');
-  nav.innerHTML = '';
+  const brandName = document.getElementById('brand-scene-name');
+  if (brandName) brandName.textContent = currentScene.name;
+
+  const menu = document.getElementById('brand-dropdown-menu');
+  if (!menu) return;
+  menu.innerHTML = '';
+  
   if (SCENES.length <= 1) {
-    nav.classList.add('hidden');
+    const toggle = document.getElementById('brand-dropdown-toggle');
+    if (toggle) toggle.style.pointerEvents = 'none';
     return;
   }
-  nav.classList.remove('hidden');
+  
   for (const s of SCENES) {
     const btn = document.createElement('button');
-    btn.className = `btn scene-btn${s.id === currentScene.id ? ' active' : ''}`;
-    btn.textContent = s.name;
-    btn.addEventListener('click', () => void switchScene(s.id));
-    nav.appendChild(btn);
+    btn.className = 'btn btn-block';
+    if (s.id === currentScene.id) btn.classList.add('active');
+    btn.textContent = s.name + (s.hint ? ' (' + s.hint + ')' : '');
+    btn.style.textAlign = 'left';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      menu.classList.add('hidden');
+      void switchScene(s.id);
+    });
+    menu.appendChild(btn);
+  }
+  
+  // Setup dropdown toggle logic once
+  const toggle = document.getElementById('brand-dropdown-toggle');
+  if (toggle && !toggle.dataset.bound) {
+    toggle.dataset.bound = 'true';
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      menu.classList.toggle('hidden');
+    });
+    document.addEventListener('click', () => {
+      menu.classList.add('hidden');
+    });
   }
 }
 
@@ -675,8 +604,11 @@ async function switchScene(sceneId: string): Promise<void> {
     const set = normalizeLayerSet(await res.json(), sceneId);
     currentScene = target;
     state.bakedLayerSet = set;
-    setDemoBadge(false);
-    loadSet(set);
+    const img = document.getElementById('img-source');
+    if (img) img.setAttribute('src', target.image);
+    const preview = document.getElementById('source-image-preview');
+    if (preview) preview.style.display = 'flex';
+        loadSet(set);
     renderSceneSwitcher();
     showToast(`已切换到场景：${target.name}`);
   } catch (err) {
@@ -685,227 +617,94 @@ async function switchScene(sceneId: string): Promise<void> {
   }
 }
 
-/* ---------------- 现场重跑（票 16）：异步任务式 UI ---------------- */
 
-type RerunPhase = 'key' | 'running' | 'error' | 'success';
-type StageState = 'pending' | 'active' | 'done' | 'fail';
-const STAGE_ORDER: RerunStage[] = ['decompose', 'map', 'vectorize', 'topology'];
-
-const ERROR_CATEGORY_LABEL: Record<string, string> = {
-  key: 'Key 无效',
-  'rate-limit': '请求过于频繁',
-  timeout: '请求超时',
-  network: '网络受限',
-  moderation: '内容未通过安全检查',
-  api: '接口错误',
-  parse: '结果解析失败',
-  cancelled: '已取消',
-};
-
-const rerunDebug: {
-  events: Array<{ type: string; stage?: string; text?: string; ms?: number }>;
-  ok: boolean | null;
-  demoMode: boolean;
-} = { events: [], ok: null, demoMode: false };
-
-const rerun = {
-  phase: 'key' as RerunPhase,
-  controller: null as AbortController | null,
-  elapsedTimer: 0 as number,
-  t0: 0,
-  stageStart: {} as Record<string, number>,
-  stageStates: {} as Record<string, StageState>,
-};
-
-function fmtElapsed(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-}
-
-function fmtDuration(ms: number): string {
-  const s = Math.round(ms / 1000);
-  if (s < 60) return `${s} 秒`;
-  return `${Math.floor(s / 60)} 分 ${String(s % 60).padStart(2, '0')} 秒`;
-}
-
-function showRerunStep(step: 'key' | 'progress' | 'error' | 'success'): void {
-  $('rerun-step-key').classList.toggle('hidden', step !== 'key');
-  $('rerun-step-progress').classList.toggle('hidden', step !== 'progress');
-  $('rerun-step-error').classList.toggle('hidden', step !== 'error');
-  $('rerun-step-success').classList.toggle('hidden', step !== 'success');
-}
-
-function setStageState(stage: RerunStage | 'done', st: StageState): void {
-  rerun.stageStates[stage] = st;
-  const el = document.querySelector(`#rerun-stages .stage[data-stage="${stage}"]`);
-  if (!el) return;
-  el.classList.toggle('active', st === 'active');
-  el.classList.toggle('done', st === 'done');
-  el.classList.toggle('fail', st === 'fail');
-  const detail = el.querySelector('.stage-detail') as HTMLElement;
-  if (st === 'pending') {
-    detail.hidden = true;
-    detail.textContent = '';
-  }
-}
-
-function setStageDetail(stage: RerunStage | 'done', text: string): void {
-  const el = document.querySelector(`#rerun-stages .stage[data-stage="${stage}"] .stage-detail`) as HTMLElement | null;
-  if (!el) return;
-  el.hidden = false;
-  el.textContent = text;
-}
-
-function setStageTime(stage: RerunStage | 'done', text: string): void {
-  const el = document.querySelector(`#rerun-stages .stage[data-stage="${stage}"] .stage-time`);
-  if (el) el.textContent = text;
-}
-
-function resetRerunStages(): void {
-  for (const stage of [...STAGE_ORDER, 'done' as const]) {
-    setStageState(stage, 'pending');
-    setStageTime(stage, '');
-    const hint = document.querySelector(`#rerun-stages .stage[data-stage="${stage}"] .stage-hint`) as HTMLElement | null;
-    if (hint) hint.hidden = false;
-  }
-}
-
-function openRerunModal(): void {
-  rerun.phase = 'key';
-  showRerunStep('key');
-  $('rerun-modal').classList.remove('hidden');
-  $('rerun-key-input').focus();
-}
-
-function closeRerunModal(): void {
-  // 运行中关闭 = 取消任务
-  rerun.controller?.abort();
-  rerun.controller = null;
-  stopElapsed();
-  // Key 只存内存：关闭模态即清空输入框
-  ($('rerun-key-input') as HTMLInputElement).value = '';
-  $('rerun-modal').classList.add('hidden');
-}
-
-function stopElapsed(): void {
-  if (rerun.elapsedTimer) {
-    window.clearInterval(rerun.elapsedTimer);
-    rerun.elapsedTimer = 0;
-  }
-}
-
-function setDemoBadge(on: boolean): void {
-  state.demoMode = on;
-  rerunDebug.demoMode = on;
-  $('demo-badge').classList.toggle('hidden', !on);
-}
-
-$('btn-rerun').addEventListener('click', openRerunModal);
-$('btn-rerun-close').addEventListener('click', closeRerunModal);
-$('btn-rerun-cancel').addEventListener('click', () => rerun.controller?.abort());
-$('btn-rerun-finish').addEventListener('click', closeRerunModal);
-
-$('btn-rerun-retry').addEventListener('click', () => {
-  rerun.phase = 'key';
-  showRerunStep('key');
+/* ---------------- dock menus ---------------- */
+document.addEventListener('click', () => {
+  $('cam-menu')?.classList.add('hidden');
+  $('light-menu')?.classList.add('hidden');
+  $('explode-menu')?.classList.add('hidden');
+  $('bg-menu')?.classList.add('hidden');
+  $('struct-menu')?.classList.add('hidden');
 });
 
-$('btn-rerun-fallback').addEventListener('click', () => {
-  if (!state.bakedLayerSet) {
-    showToast('烘焙数据不可用，无法回退');
-    return;
-  }
-  loadSet(state.bakedLayerSet);
-  setDemoBadge(true);
-  showToast('已回退到预置演示数据');
-  closeRerunModal();
+$('explode-toggle')?.addEventListener('click', (e) => {
+  $('explode-menu')?.classList.toggle('hidden');
+  $('cam-menu')?.classList.add('hidden');
+  $('light-menu')?.classList.add('hidden');
+  $('bg-menu')?.classList.add('hidden');
+  $('struct-menu')?.classList.add('hidden');
+  e.stopPropagation();
 });
 
-$('btn-rerun-start').addEventListener('click', () => {
-  if (rerun.phase === 'running') return;
-  // Key 只从输入框读入内存变量，不写任何持久化存储，不打日志
-  const key = ($('rerun-key-input') as HTMLInputElement).value.trim();
-  if (key.length < 8) {
-    showToast('请先粘贴你的方舟 API Key');
-    $('rerun-key-input').focus();
-    return;
-  }
-  rerun.phase = 'running';
-  rerunDebug.ok = null;
-  rerunDebug.events = [];
-  rerun.stageStart = {};
-  resetRerunStages();
-  showRerunStep('progress');
-  rerun.t0 = Date.now();
-  stopElapsed();
-  rerun.elapsedTimer = window.setInterval(() => {
-    $('rerun-elapsed').textContent = fmtElapsed(Date.now() - rerun.t0);
-  }, 500);
+$('light-toggle')?.addEventListener('click', (e) => {
+  $('light-menu')?.classList.toggle('hidden');
+  $('cam-menu')?.classList.add('hidden');
+  $('explode-menu')?.classList.add('hidden');
+  $('bg-menu')?.classList.add('hidden');
+  $('struct-menu')?.classList.add('hidden');
+  e.stopPropagation();
+});
 
-  const controller = new AbortController();
-  rerun.controller = controller;
+$('cam-toggle')?.addEventListener('click', (e) => {
+  $('cam-menu')?.classList.toggle('hidden');
+  $('explode-menu')?.classList.add('hidden');
+  $('light-menu')?.classList.add('hidden');
+  $('bg-menu')?.classList.add('hidden');
+  $('struct-menu')?.classList.add('hidden');
+  e.stopPropagation();
+});
 
-  const onStage = (stage: RerunStage): void => {
-    rerunDebug.events.push({ type: 'stage', stage });
-    rerun.stageStart[stage] = Date.now();
-    setStageState(stage, 'active');
-  };
-  const onDetail = (stage: RerunStage, text: string): void => {
-    rerunDebug.events.push({ type: 'detail', stage, text });
-    setStageDetail(stage, text);
-  };
-  const onStageDone = (stage: RerunStage, ms: number, summary: string): void => {
-    rerunDebug.events.push({ type: 'done', stage, ms, text: summary });
-    setStageState(stage, 'done');
-    setStageTime(stage, fmtDuration(ms));
-    setStageDetail(stage, summary);
-  };
-  const onError = (category: string, message: string): void => {
-    stopElapsed();
-    rerun.controller = null;
-    const active = STAGE_ORDER.find((s) => rerun.stageStates[s] === 'active');
-    if (active) setStageState(active, 'fail');
-    rerun.phase = 'error';
-    rerunDebug.ok = false;
-    rerunDebug.events.push({ type: 'error', text: category });
-    $('rerun-error-cat').textContent = ERROR_CATEGORY_LABEL[category] ?? category;
-    $('rerun-error-msg').textContent = message;
-    // 取消（而非失败）时没有数据被替换，不需要回退按钮
-    $('btn-rerun-fallback').hidden = category === 'cancelled';
-    showRerunStep('error');
-  };
-  const onSuccess = (layerSet: LayerSet, totalMs: number, timings: Record<RerunStage, number>): void => {
-    stopElapsed();
-    rerun.controller = null;
-    rerun.phase = 'success';
-    rerunDebug.ok = true;
-    rerunDebug.events.push({ type: 'success', ms: totalMs });
-    for (const stage of STAGE_ORDER) {
-      if (rerun.stageStates[stage] !== 'done') {
-        setStageState(stage, 'done');
-        setStageTime(stage, fmtDuration(timings[stage] ?? 0));
-      }
-    }
-    setStageState('done', 'done');
-    setStageTime('done', fmtDuration(totalMs));
-    setStageDetail('done', `五段全部完成，已切换到新结果`);
-    loadSet(layerSet);
-    setDemoBadge(false);
-    $('rerun-total-final').textContent = fmtDuration(totalMs);
-    showRerunStep('success');
-    showToast(`现场重跑完成（${fmtDuration(totalMs)}），已切换到新结果`);
-  };
+$('bg-toggle')?.addEventListener('click', (e) => {
+  $('bg-menu')?.classList.toggle('hidden');
+  $('cam-menu')?.classList.add('hidden');
+  $('explode-menu')?.classList.add('hidden');
+  $('light-menu')?.classList.add('hidden');
+  $('struct-menu')?.classList.add('hidden');
+  e.stopPropagation();
+});
 
-  void runLiveRerun({
-    apiKey: key,
-    sceneImageUrl: sceneImageUrl(currentScene.id),
-    sceneId: currentScene.id,
-    sceneHint: currentScene.hint,
-    promptTemplate: evolvingPrompt,
-    schema: evolvingSchema,
-    signal: controller.signal,
-    callbacks: { onStage, onDetail, onStageDone, onError, onSuccess },
+$('struct-toggle')?.addEventListener('click', (e) => {
+  $('struct-menu')?.classList.toggle('hidden');
+  $('cam-menu')?.classList.add('hidden');
+  $('explode-menu')?.classList.add('hidden');
+  $('light-menu')?.classList.add('hidden');
+  $('bg-menu')?.classList.add('hidden');
+  e.stopPropagation();
+});
+
+$('struct-menu')?.addEventListener('click', (e) => e.stopPropagation());
+$('light-menu')?.addEventListener('click', (e) => e.stopPropagation());
+$('cam-menu')?.addEventListener('click', (e) => e.stopPropagation());
+$('explode-menu')?.addEventListener('click', (e) => e.stopPropagation());
+$('bg-menu')?.addEventListener('click', (e) => e.stopPropagation());
+
+
+/* ---------------- background toggles ---------------- */
+document.querySelectorAll('.bg-preset').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const bg = (btn as HTMLElement).dataset.bg!;
+    document.documentElement.style.setProperty('--bg', bg);
+    document.querySelectorAll('.bg-preset').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    const toggle = document.getElementById('bg-toggle');
+    if (toggle) toggle.style.background = bg;
   });
 });
 
+$('picker-bg-color')?.addEventListener('input', (e) => {
+  const hex = (e.target as HTMLInputElement).value;
+  $('hex-bg-val').textContent = hex.toUpperCase();
+  document.documentElement.style.setProperty('--bg', hex);
+  document.querySelectorAll('.bg-preset').forEach((b) => b.classList.remove('active'));
+  const toggle = document.getElementById('bg-toggle');
+  if (toggle) toggle.style.background = hex;
+});
+
+
+$('btn-open-2d')?.addEventListener('click', () => {
+  render2D();
+  document.getElementById('drawer-2d')?.classList.add('open');
+});
+
 void bootstrap();
+

@@ -12,13 +12,14 @@
     "bake:check": "node scripts/check-masks.mjs",
     "selftest:browser": "node scripts/selftest-browser.mjs",
     "accept:pages": "node scripts/accept-pages.mjs",
-    "check:copy": "node scripts/check-copy.mjs",
-    "rerun:live": "node scripts/rerun-live-manual.mjs"
+    "check:copy": "node scripts/check-copy.mjs"
   },
   "dependencies": {
+    "sortablejs": "^1.15.7",
     "three": "^0.179.0"
   },
   "devDependencies": {
+    "@types/sortablejs": "^1.15.9",
     "@types/three": "^0.179.0",
     "playwright": "^1.63.0",
     "pngjs": "^7.0.0",

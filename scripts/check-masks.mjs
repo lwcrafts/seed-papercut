@@ -1,6 +1,7 @@
 // 蒙版语义自查（issue 12）：对 .bake/<sceneId>/masks/L1..6.png 做宽松的空间统计断言。
 // 白=纸。规则来自 CONTEXT.md 六层语义（L1 天光在上、L5 主体居中偏下、L6 前景贴底），
 // 阈值刻意放宽——只挡住「层映射明显错乱」的情况，不做像素级验收。
+// L6 前景框景允许贴底（草丛）或贴顶（垂落树冠）两种框景形态。
 //
 // 用法：npm run bake:check -- xiake   （bake.mjs 结束时会自动跑一遍）
 import { readFileSync, existsSync } from 'node:fs';
@@ -63,8 +64,9 @@ export function runMaskChecks(meta) {
       c.push({ name: 'subjectAreaSane', pass: s.whiteRatio > 0.005 && s.whiteRatio < 0.4, detail: `whiteRatio=${s.whiteRatio.toFixed(4)}` });
     }
     if (L === 6) {
-      // 前景框景：白像素主体应落在画面底部
-      c.push({ name: 'foregroundAtBottom', pass: s.bottomShare > 0.5, detail: `bottomShare=${s.bottomShare.toFixed(3)}` });
+      // 前景框景：白像素主体应贴画面外缘——底部（水岸草丛）或顶部（垂落树冠）均可
+      const framesEdge = s.bottomShare > 0.5 || s.topShare > 0.5;
+      c.push({ name: 'foregroundFramesEdge', pass: framesEdge, detail: `topShare=${s.topShare.toFixed(3)} bottomShare=${s.bottomShare.toFixed(3)}` });
     }
     results.push({ layer: L, pass: c.every((x) => x.pass), checks: c });
   }

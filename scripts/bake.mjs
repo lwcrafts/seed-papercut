@@ -37,6 +37,19 @@ const SCENES = {
     image: 'public/scenes/xiake.jpg',
     hint: '暖金色纸雕风古风山水插画：侠客策马、古亭、层叠山峦、松树、祥云、水岸草丛。',
   },
+  test: {
+    image: 'public/scenes/test.png',
+    hint: '明亮夏日海边实拍：蓝天、碧海与白色浪花前，一对年轻情侣站在沙滩上的椰子树下，各抱一个插吸管的青椰子，相视而笑；大片垂落的棕榈叶在画面上方形成框景，左下角有一丛深绿灌木。',
+    // 粗粒度拆层：纸雕灯只需要大主体，同主体（尤其整片棕榈树冠）必须合并为一层，
+    // 不要按叶片/发丝/水花等碎片单拆；目标 7 层（归并到 L1-L6 时每层至少 1 个）
+    decomposePrompt: '请把这张图粗粒度拆分为约 7 个纵深层，只保留大主体，用于纸雕光影灯：' +
+      '1) 天空（整体一层，含天光）；2) 远处海面与白色浪花（合并一层）；3) 沙滩（整体一层）；' +
+      '4) 画面上方所有垂落的椰子树/棕榈树叶连同树冠必须合并为单独一层，不要按叶片或枝条拆分；' +
+      '5) 男生人物整体一层（含其手中的青椰子）；6) 女生人物整体一层（含其手中的青椰子）；' +
+      '7) 左下角灌木丛整体一层。发丝、手指、吸管、零散叶片、水花等细碎内容不要单独成层，并入各自所属主体。',
+    mergeHint: '本次为粗粒度实拍照片拆层：棕榈叶整体只归一层（L6 前景框景），' +
+      '男生、女生各为一个独立主体（L5 视觉主体，可同层），不要把人物或树叶再拆成多个细层。',
+  },
 };
 
 const sceneId = process.argv[2];
@@ -80,6 +93,8 @@ async function decompose() {
     layer_decomposition: true,
     size: '2K',
     watermark: false,
+    // 拆层 prompt 可省略（默认自动全拆）；粗粒度场景通过它约束层数与合并粒度
+    ...(scene.decomposePrompt ? { prompt: scene.decomposePrompt } : {}),
   };
   const t0 = Date.now();
   const res = await undiciFetch(`${BASE}/images/generations`, {
@@ -142,7 +157,7 @@ ${table}
 4. 其余粒度自检、空层禁令等规则照常执行。`;
 
   const userText = `画面说明：${scene.hint}
-
+${scene.mergeHint ? `\n本次粒度要求：${scene.mergeHint}\n` : ''}
 请把拆层引擎给出的 ${layers.length} 个原始图层按归并映射规则分配到 L1-L6（本次调用标记：bake-${sceneId}）。先通读图层清单的 z 顺序与语义，再落映射，最后自检：${layers.length} 个图层是否每层分配恰好一次、主体剪影是否落在 L5、前景草丛是否落在 L6。`;
 
   const b64 = readFileSync(join(BAKE, 'layers', `base-z${base?.z_index ?? 0}.jpeg`)).toString('base64');
@@ -266,6 +281,38 @@ function loadAlpha(pngPath, bbox, CW, CH) {
   return out;
 }
 
+// 加载不透明像素的亮度/饱和度（其余为 -1），用于 L1「云=纸、天空=镂空」提取：
+// 实拍照片拆层时模型可能把整面天空作为不透明层返回（alpha 实心板），
+// 直接二值化会得到整块白纸挡住 LED；故只保留层内高亮、低饱和的白云像素。
+function loadCloudAlpha(pngPath, bbox, CW, CH, luMin, satMax) {
+  const png = PNG.sync.read(readFileSync(pngPath));
+  const [bx0, by0, bx1, by1] = bbox;
+  const bw = bx1 - bx0, bh = by1 - by0;
+  const out = new Uint8Array(CW * CH);
+  for (let y = 0; y < bh; y++) {
+    const cy = by0 + y;
+    if (cy < 0 || cy >= CH) continue;
+    const sy = Math.min(png.height - 1, Math.floor((y * png.height) / bh));
+    for (let x = 0; x < bw; x++) {
+      const cx = bx0 + x;
+      if (cx < 0 || cx >= CW) continue;
+      const sx = Math.min(png.width - 1, Math.floor((x * png.width) / bw));
+      const p = (sy * png.width + sx) * 4;
+      const a = png.data[p + 3];
+      if (a < 128) continue;
+      const r = png.data[p], g = png.data[p + 1], b = png.data[p + 2];
+      const lu = 0.299 * r + 0.587 * g + 0.114 * b;
+      const sat = Math.max(r, g, b) - Math.min(r, g, b);
+      if (lu >= luMin && sat <= satMax) out[cy * CW + cx] = 255;
+    }
+  }
+  return out;
+}
+
+const CLOUD_LU_MIN = 210;    // 白云亮度下限
+const CLOUD_SAT_MAX = 60;    // 白云饱和度上限（排除蓝天）
+const SKY_FULL_LAYER_RATIO = 0.3; // L1 alpha 实心占比超过此值 → 判定模型返回了整块天空
+
 // 4 邻接 BFS 连通分量（触摸边界的分量不视为噪点）
 function components(w, h, px) {
   const seen = new Uint8Array(w * h);
@@ -356,12 +403,27 @@ function binarizeLayers(decomposeRec, evolveRec) {
   for (let L = 1; L <= 6; L++) {
     const zsL = byL[L];
     if (zsL.length === 0) throw new Error(`L${L} 没有被映射任何图层（空层）`);
-    const alpha = new Uint8Array(CW * CH);
-    for (const m of zsL) {
-      const a = alphas.get(m.z);
-      for (let i = 0; i < alpha.length; i++) {
-        const s = alpha[i] + a[i];
-        alpha[i] = s > 255 ? 255 : s; // 同层 alpha 相加，饱和截断
+    const mergeAlpha = (srcs) => {
+      const out = new Uint8Array(CW * CH);
+      for (const a of srcs) for (let i = 0; i < out.length; i++) {
+        const s = out[i] + a[i];
+        out[i] = s > 255 ? 255 : s; // 同层 alpha 相加，饱和截断
+      }
+      return out;
+    };
+    let alpha = mergeAlpha(zsL.map((m) => alphas.get(m.z)));
+    // L1 天光策略：云=纸、天空=镂空透光。模型把整面天空作为不透明层返回时
+    // （alpha 实心板），改从层内只提取高亮低饱和的白云像素。
+    let l1Policy = null;
+    if (L === 1) {
+      const ratio = alpha.reduce((n, v) => n + (v >= THRESHOLD ? 1 : 0), 0) / alpha.length;
+      if (ratio > SKY_FULL_LAYER_RATIO) {
+        const cloudSrcs = zsL.map((m) => loadCloudAlpha(m.file, m.bbox, CW, CH, CLOUD_LU_MIN, CLOUD_SAT_MAX));
+        alpha = mergeAlpha(cloudSrcs);
+        l1Policy = `cloud-extract（alpha 实心占比 ${ratio.toFixed(2)} > ${SKY_FULL_LAYER_RATIO}，改提取白云：lu>=${CLOUD_LU_MIN}, sat<=${CLOUD_SAT_MAX}）`;
+        log(`L1 触发天光云提取：alpha 实心占比 ${ratio.toFixed(2)}`);
+      } else {
+        l1Policy = 'alpha-as-is（稀疏天光层，云/月直接取 alpha）';
       }
     }
     // 半分辨率形态学清理
@@ -386,7 +448,7 @@ function binarizeLayers(decomposeRec, evolveRec) {
     const maskPath = join(BAKE, 'masks', `L${L}.png`);
     writeFileSync(maskPath, PNG.sync.write(png));
     log(`L${L} [${zsL.map((m) => `z${m.z} ${m.name}`).join(' + ')}] -> masks/L${L}.png`);
-    meta.layers.push({ index: L, sources: zsL.map((m) => ({ z: m.z, name: m.name })), mask: `masks/L${L}.png` });
+    meta.layers.push({ index: L, sources: zsL.map((m) => ({ z: m.z, name: m.name })), mask: `masks/L${L}.png`, ...(l1Policy ? { maskPolicy: l1Policy } : {}) });
   }
   writeFileSync(join(BAKE, 'bake-meta.json'), JSON.stringify(meta, null, 2));
   return { meta, cleanedMasks };
@@ -598,7 +660,7 @@ copyFileSync(join(BAKE, 'checks.json'), join(ARCHIVE, 'checks.json'));
 const allPass = checks.pass && layerSet.layers.every((l) => l.fabCheck.pass);
 log(`完成，总耗时 ${((Date.now() - t0) / 1000).toFixed(0)}s，产物在 ${BAKE}`);
 if (!allPass) {
-  if (!checks.pass) log('蒙版语义自查未通过（见 .bake/xiake/checks.json）');
+  if (!checks.pass) log(`蒙版语义自查未通过（见 .bake/${sceneId}/checks.json）`);
   if (!layerSet.layers.every((l) => l.fabCheck.pass)) log('存在 fabCheck.pass=false 的图层');
   process.exit(2);
 }

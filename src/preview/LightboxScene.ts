@@ -11,6 +11,7 @@ export type StructurePart = 'frame' | 'paper' | 'spacers' | 'backplate';
 export interface LightboxSettings {
   intensity: number;
   color: string;
+  bgColor: string;
   darkRoom: boolean;
   translucent: boolean;
 }
@@ -24,12 +25,12 @@ interface LayerTheme {
 // Front layers read as deep silhouettes; back layers transmit warm light.
 // Index = distance from viewer (0 = L6 观者侧 … 5 = L1 LED 侧最亮)。
 const LAYER_THEMES: LayerTheme[] = [
-  { darkBase: 0x241812, darkEmissiveMult: 0.05, lightBase: 0xf5f2eb },
-  { darkBase: 0x4a3224, darkEmissiveMult: 0.16, lightBase: 0xf8f5ee },
-  { darkBase: 0x7e5233, darkEmissiveMult: 0.35, lightBase: 0xfbf8f2 },
-  { darkBase: 0xbf7e3d, darkEmissiveMult: 0.65, lightBase: 0xfdfaf5 },
-  { darkBase: 0xf5c165, darkEmissiveMult: 1.05, lightBase: 0xfffdfa },
-  { darkBase: 0xf9d489, darkEmissiveMult: 1.25, lightBase: 0xfffdfb },
+  { darkBase: 0x3d281e, darkEmissiveMult: 0.18, lightBase: 0xf5f2eb }, // L6 观者侧 (原 0.05)
+  { darkBase: 0x613f2d, darkEmissiveMult: 0.32, lightBase: 0xf8f5ee }, // L5 主体层 (原 0.16)
+  { darkBase: 0x8a5938, darkEmissiveMult: 0.48, lightBase: 0xfbf8f2 }, // L4 (原 0.35)
+  { darkBase: 0xc68542, darkEmissiveMult: 0.75, lightBase: 0xfdfaf5 }, // L3
+  { darkBase: 0xf6c56b, darkEmissiveMult: 1.15, lightBase: 0xfffdfa }, // L2
+  { darkBase: 0xfada8f, darkEmissiveMult: 1.35, lightBase: 0xfffdfb }, // L1 LED 侧
 ];
 
 function themeFor(index: number, total: number): LayerTheme {
@@ -105,6 +106,7 @@ export class LightboxScene {
   private sheetHeight = 600;
 
   private explode = 0;
+  private slotTweens: { mesh: THREE.Mesh, startZ: number, targetZ: number, startTime: number }[] = [];
   private soloIndex: number | null = null;
   private visibility: Record<StructurePart, boolean> = {
     frame: true,
@@ -115,6 +117,7 @@ export class LightboxScene {
   private settings: LightboxSettings = {
     intensity: 2.2,
     color: '#FFE0B2',
+    bgColor: '#05070d',
     darkRoom: true,
     translucent: true,
   };
@@ -128,13 +131,15 @@ export class LightboxScene {
     const height = container.clientHeight || window.innerHeight;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x05070d);
+    this.scene.background = null;
 
     this.camera = new THREE.PerspectiveCamera(42, width / height, 1, 5000);
     this.camera.position.set(450, 250, 800);
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
+      alpha: true,
+      
       preserveDrawingBuffer: true,
       powerPreference: 'high-performance',
     });
@@ -152,7 +157,7 @@ export class LightboxScene {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.05;
-    this.controls.maxDistance = 2600;
+    this.controls.maxDistance = 3600;
     this.controls.minDistance = 120;
     this.controls.maxPolarAngle = Math.PI / 2 + 0.12;
     this.controls.target.set(0, 0, 0);
@@ -404,6 +409,7 @@ export class LightboxScene {
   }
 
   private applyExplode(progress: number): void {
+    this.slotTweens = [];
     this.explode = progress;
     const p = this.plan;
     const n = this.plan.layerCount;
@@ -426,6 +432,35 @@ export class LightboxScene {
     if (this.rectLight) this.rectLight.position.z = ledZ + 3;
     if (this.keyLight) this.keyLight.position.z = ledZ + 8;
     for (const fill of this.fillLights) fill.position.z = ledZ + 8;
+  }
+
+
+  reorderLayer(oldIndex: number, newIndex: number): void {
+    if (oldIndex === newIndex) return;
+    // this.layers is already updated by caller since they share the same array reference.
+    
+    const mesh = this.paperMeshes.splice(oldIndex, 1)[0];
+    this.paperMeshes.splice(newIndex, 0, mesh);
+    
+    this.updateMaterials();
+    
+    const p = this.plan;
+    const n = this.plan.layerCount;
+    const lerp = THREE.MathUtils.lerp;
+    const now = performance.now();
+    
+    this.paperMeshes.forEach((m, idx) => {
+      const slot = n - 1 - idx;
+      const targetZ = lerp(p.paperZ[slot], p.paperExplodedZ[slot], this.explode);
+      if (Math.abs(m.position.z - targetZ) > 0.1) {
+        this.slotTweens.push({
+          mesh: m,
+          startZ: m.position.z,
+          targetZ,
+          startTime: now
+        });
+      }
+    });
   }
 
   updateSettings(patch: Partial<LightboxSettings>): void {
@@ -503,9 +538,8 @@ export class LightboxScene {
       }
     });
 
-    this.ambient.intensity = darkRoom ? 0.06 : 0.5;
-    this.dirFill.intensity = darkRoom ? 0.18 : 0.8;
-    (this.scene.background as THREE.Color).setHex(darkRoom ? 0x05070d : 0x141822);
+    this.ambient.intensity = darkRoom ? 0.12 : 0.5;
+    this.dirFill.intensity = darkRoom ? 0.28 : 0.8;
   }
 
   setCameraView(name: CameraViewName): void {
@@ -538,6 +572,22 @@ export class LightboxScene {
 
   private animate = (): void => {
     this.raf = requestAnimationFrame(this.animate);
+    
+    if (this.slotTweens.length > 0) {
+      const now = performance.now();
+      const duration = 400; // ms
+      this.slotTweens = this.slotTweens.filter(tween => {
+        let t = (now - tween.startTime) / duration;
+        if (t >= 1) {
+          tween.mesh.position.z = tween.targetZ;
+          return false;
+        }
+        t = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; // easeInOutQuad
+        tween.mesh.position.z = THREE.MathUtils.lerp(tween.startZ, tween.targetZ, t);
+        return true;
+      });
+    }
+
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   };

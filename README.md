@@ -13,7 +13,7 @@
 - 逐层制造检查：孤岛数 / 连接桥 / 切割总长 / 最小缝隙 / 通过与否，全部直读烘焙产物里的真实算法结果
 - 现场重跑：观众填自己的方舟 Key，可在浏览器里对预置场景全链路重跑（约 5–7 分钟）
 
-预置场景：**侠客策马**（烘焙结果提交在 `public/data/baked/`）。站点带数据驱动的场景切换骨架：当前只有 1 个场景时切换器自动隐藏；加新场景 = 烘焙出一份 JSON + 在 `src/app/main.ts` 的场景清单里加一条。
+预置场景：**侠客策马**（烘焙结果提交在 `public/data/baked/`）、**海边椰子树下**（实拍照片，粗粒度拆层：天空/海面/沙滩/灌木/双人/棕榈树冠）。站点带数据驱动的场景切换器：只有 1 个场景时自动隐藏；加新场景 = 烘焙出一份 JSON + 在 `src/app/main.ts` 的场景清单里加一条（`image` 支持 .jpg/.png）。
 
 ## 管线
 
@@ -53,15 +53,7 @@ npm run bake -- xiake --fresh  # 忽略缓存重新调用（拆层约 2 分钟 +
 
 Key 读取顺序：环境变量 `ARK_API_KEY` → 仓库外 `v2/.env`。只进内存，不打印、不落盘。中间产物缓存在 `.bake/<sceneId>/`（已 gitignore）；响应存档脱敏后落在 `.scratch/seed-papercut/research/bake-run/`。
 
-## 现场重跑（rerun:live）
-
-页面上的「用你的 Key 现场重跑」：观众填自己的方舟 Key，浏览器直连方舟接口，对预置场景重跑同一管线，五段进度实时显示（拆层中 / 语义映射中 / 矢量化中 / 拓扑修复中 / 完成）。Key 只保存在页面内存里：不写入本地存储、不经过任何中间服务器（站点本来就没有服务器）；失败时自动回退烘焙结果并显著标注「演示数据」。
-
-本地手动真跑（不走 CI）：
-
-```bash
 npm run build
-ARK_API_KEY=xxx node scripts/rerun-live-manual.mjs   # 各段耗时与截图落 .bake/selftest/live-rerun/
 ```
 
 ## GitHub Pages 部署
